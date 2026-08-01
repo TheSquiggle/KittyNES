@@ -310,6 +310,47 @@ just not read by the renderer yet), multi-nametable rendering, PPUMASK
 bits, sprites/OAM, and per-scanline cycle-accurate timing (Phase 8
 territory).
 
+## 2026-08-01 — Phase 6b: sprites (OAM) + scrolling — DONE
+
+Added `phase6b_sprites(e)` to `code/build_core.py`. New lists/vars: `BGOP`
+(256*240, raw pre-palette bg color-index 0-3 per pixel, needed for sprite
+priority/sprite-0-hit independent of what the resolved color happens to be),
+plus sprite-eval scratch (`SPRLO`/`SPRHI`/`SPRAT`/`SPRID`/`SPRX`/`SPRN`
+already existed from Phase 2, now actually used) and three previously-unused
+namespaces of scratch temps (`SPR_T1-3`, `SC_T1-4`) kept disjoint from the
+CPU (`T1-9`) and bus (`U1-9`) families per the lesson learned in Phase 3/4.
+
+New procs: `spr_update_patbase`, `spr_fetch_planes` (8x8 and 8x16
+addressing, vertical flip), `sprite_eval_line` (<=8 sprites/scanline,
+overflow flag), `composite_pixel` (priority bit, sprite-0-hit),
+`render_sprites_line`/`render_sprites_frame`; and for scrolling:
+`ppu_copy_horiz_v`/`ppu_copy_vert_v`, `ppu_scanline_inc_coarse_x`,
+`ppu_scanline_inc_y`, `bg_setup_tile_v`, `render_bg_line_scrolled`/
+`render_bg_frame_scrolled`. All scroll-register math uses arithmetic
+(subtract-old-field/add-new-field), not the 8-bit-operand `BAND`/`BOR`
+lookup tables, since `P_V`/`P_T` hold up to 15 bits.
+
+Full design writeup in `docs/nes_ppu_notes.md` (updated): sprite evaluation
+semantics, 8x16 addressing, priority/sprite-0-hit logic, and the loopy
+register increment algorithms including the coarse-Y-29-vs-31 special case.
+
+Verified with new `code/test_ppu_sprites.py` (22 checks) -- **all pass**:
+sprite compositing over transparent background, priority-bit behavior in
+both directions, sprite-0-hit (positive + negative cases), 8-sprite overflow
+(9-sprite line sets it, exactly-8 doesn't), and scroll-register
+increment/copy correctness including both wrap special cases. Also spot
+verified `render_bg_line_scrolled` against a known pattern. Reran
+`test_cpu.py`/`test_mappers.py`/`test_ppu_bg.py` — no regressions.
+
+Rebuilt `progress/nes_emulator_wip_phase3_full.sb3`: 2,790 blocks.
+`validate_sb3.py`: clean.
+
+Explicitly deferred (see doc's final section): fine-X sub-tile pixel-level
+horizontal scroll (coarse 8px-granularity scrolling works), PPUMASK bits,
+per-scanline cycle-accurate timing (Phase 8), and real hardware's buggy
+sprite-overflow evaluation quirk (we implement a simpler always-correct
+version).
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*

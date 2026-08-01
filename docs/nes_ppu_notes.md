@@ -139,25 +139,127 @@ FB(16,0)=blue, FB(0,16)=blue`, i.e. classic checkerboard corners. Once
 draw as an 8x8-tile blue/black checkerboard covering the full 256x240 stage
 area (mapped to the centered -128..127 / -120..119 pen-coordinate window).
 
-## Not yet implemented (deferred to a later Phase 6 sub-pass)
+## Phase 6b: sprites (OAM) + scrolling
 
-- **Scrolling** (loopy `v`/`t`/`x`/`w` registers already exist as globals and
-  are correctly updated by the PPUSCROLL/PPUADDR register-write logic in
-  Phase 2, but `render_bg_region`/`bg_setup_tile` don't read `P_V`/`P_X` yet
-  -- rendering is currently always nametable 0, zero-scroll, coarse-tile-
-  aligned only).
-- **Multiple nametables** (only nametable 0's tile range is read; the
-  `MIRROR` logic in `nt_index` is fully implemented and already used by
-  `ppu_read`, so once scrolling reads across nametable boundaries the
-  existing mirroring will "just work" -- this is a rendering-loop gap, not
-  a missing-data gap).
-- **PPUMASK bits** (background-rendering-enable, left-column-clip,
-  greyscale, emphasis) are not consulted -- background always renders.
-- **Sprites/OAM** (`OAM`/`SPRX`/`SPRLO`/`SPRHI`/`SPRAT`/`SPRID`/`SPRN` globals
-  and lists already exist from Phase 2's `declare_state`, unused so far).
-- **Per-scanline timing** (the real PPU renders one scanline of 8 pixels'
-  worth of fetches interleaved with CPU cycles at a fixed 3:1 PPU:CPU clock
-  ratio; the current renderer is a single "render the whole frame at once"
-  batch operation with no cycle-accurate timing, no mid-frame register-write
-  effects like split-scroll raster tricks, and no vblank-timing interaction
-  -- that's Phase 8 (main loop) territory).
+New in `phase6b_sprites(e)`.
+
+### Sprite evaluation and rendering
+
+`sprite_eval_line sl` scans all 64 OAM entries (4 bytes each: Y, tile,
+attribute, X) and picks up to 8 whose vertical range covers scanline `sl`
+(`sl - Y - 1` in `[0, height)`, height 8 or 16 from PPUCTRL bit 5 — the
+real hardware's "Y byte is one less than the sprite's first visible
+scanline" quirk). The 9th qualifying sprite on a line sets the PPUSTATUS
+overflow bit (bit 5) via `BOR`; real hardware has a well-known *buggy*
+overflow-evaluation algorithm (it doesn't actually scan cleanly starting from
+OAM entry 0 after the first 8 -- see nesdev wiki) which we do NOT replicate,
+since almost nothing depends on the buggy specifics and a always-correct
+overflow flag is a reasonable/common emulator simplification.
+
+For 8x16 sprites, `spr_fetch_planes` implements the real addressing: pattern
+table bank = tile bit 0, tile number = tile with bit 0 cleared, and the tile
+is treated as two stacked 8x8 half-tiles (`tile_num` for rows 0-7,
+`tile_num+1` for rows 8-15) — vertical flip (attribute bit 7) is applied
+*before* this split (flipping `row` across the full 0-15 range first), which
+correctly swaps which half-tile is on top when flipped, matching real
+hardware.
+
+`composite_pixel sl x` composes one final `FB` pixel: scans the (already
+`sprite_eval_line`-populated) up-to-8 sprites in OAM-index priority order
+(lower OAM index wins ties, matching real hardware), finds the first opaque
+sprite pixel covering `x` (with horizontal flip via `attr bit 6` handled by
+mirroring the sub-tile pixel offset before the `PIXBIT_T` lookup), and
+decides sprite-vs-background: sprite wins if its priority bit (attribute
+bit 5) is 0 (front) OR the background pixel at `(x,sl)` is transparent
+(`BGOP == 0`); otherwise the background (already in `FB`) is left alone.
+Sprite-0-hit (PPUSTATUS bit 6) is checked independently of the display
+decision -- it fires whenever OAM sprite 0 specifically has an opaque pixel
+at `(x,sl)` *and* the background is opaque there too, `x != 255` (the real
+hardware quirk that suppresses hit detection at the last pixel column), and
+is a **separate** condition from which sprite wins the priority contest
+(exactly matching real 2C02 behavior: sprite-0-hit can fire even on a frame
+where sprite 0 is itself hidden behind an opaque background pixel).
+
+`render_sprites_line`/`render_sprites_frame` are the driver loops (call
+`render_bg_frame`/`render_bg_region` FIRST, since compositing reads the
+already-rendered `FB`/`BGOP`).
+
+### Loopy v/t/x/w scroll registers
+
+The PPUSCROLL/PPUADDR write-twice-with-shared-latch (`P_W`) protocol was
+already implemented in Phase 2's `ppu_reg_write`. New in Phase 6b: the
+actual *use* of `P_V`/`P_T` during rendering.
+
+`P_V`/`P_T` can hold up to 15 bits (`fine_Y(3) | NT_Y(1) | NT_X(1) |
+coarse_Y(5) | coarse_X(5)`), which is out of range for the 8-bit-operand
+`BAND`/`BOR` lookup tables (`T_AND`/`T_OR` are indexed `a*256+b` for
+`a,b` in `0..255`) -- so all the scroll-register bit manipulation uses the
+same "subtract the old field, add the new field" arithmetic pattern Phase
+2's PPUCTRL/PPUSCROLL/PPUADDR write handlers already established, not
+bitwise tables:
+
+- `ppu_copy_horiz_v` / `ppu_copy_vert_v` — copy the horizontal
+  (coarse-X + NT-X-bit) or vertical (coarse-Y + NT-Y-bit + fine-Y) fields
+  from `P_T` into `P_V`, matching the real PPU's dot-257 (horizontal) and
+  pre-render-line dot-280-304 (vertical) copy timing points.
+- `ppu_scanline_inc_coarse_x` — increments coarse X, wrapping 31->0 with an
+  NT-X-bit flip (real hardware's per-tile-fetch increment, called here once
+  per rendered tile).
+- `ppu_scanline_inc_y` — increments fine Y, and on fine-Y wrap (7->0)
+  increments coarse Y with the well-known special cases: coarse Y 29 wraps
+  to 0 *and* flips the NT-Y bit (this is the actual nametable-below
+  boundary); coarse Y 31 (only reachable if software wrote an out-of-range
+  value directly) wraps to 0 with *no* NT-Y flip (matches the real hardware
+  quirk); otherwise coarse Y just increments.
+- `bg_setup_tile_v` — like Phase 6a's `bg_setup_tile`, but derives the
+  nametable-tile and attribute-table addresses from the current `P_V`
+  (`tile_addr = 0x2000 | (v & 0xFFF)`, `attr_addr = 0x23C0 | (v & 0xC00) |
+  ((coarseY/4)*8) | (coarseX/4)`) instead of explicit nametable-0 literals
+  -- this is what makes rendering nametable-select- and scroll-aware.
+- `render_bg_line_scrolled sl` / `render_bg_frame_scrolled` — the
+  scroll-aware renderer: horizontal-copy once per scanline, coarse-X
+  increment once per tile (32 tiles/scanline), Y-increment once per
+  scanline, vertical-copy once per frame (from the caller's `P_T`, which is
+  expected to already reflect whatever PPUSCROLL/PPUADDR writes happened).
+  Because the horizontal copy and per-scanline rendering are two separate
+  proc calls per scanline (not fused into one big batch), a future Phase 8
+  main loop that mutates `P_T` between scanline calls (e.g. a raster
+  split-scroll effect) will have that reflected correctly -- the mechanism
+  is real, only the per-cycle CPU/PPU interleaving that would *drive* such
+  mid-frame writes is Phase 8 territory.
+
+**Scope note:** this implements *coarse* (8-pixel-granularity) scrolling
+via tile-address selection. Fine-X sub-tile pixel blending (shifting the
+visible window by `P_X` pixels within/across tile boundaries, which real
+hardware does via 16-bit background shift registers) is NOT yet
+implemented -- `render_bg_line_scrolled` reads `SC_FINEY` (from `P_V`) for
+the vertical fine offset but does not yet apply `P_X` to shift pixels
+horizontally across tile boundaries. Flagged as a follow-up.
+
+### Verification
+
+`code/test_ppu_sprites.py` (22 checks, all pass): sprite compositing over a
+transparent background, the priority bit (both "hidden behind opaque bg"
+and "still visible over transparent bg" cases), sprite-0-hit (both the
+positive case and the "no hit when bg transparent" negative case), the
+8-sprites-per-line overflow flag (both a 9-sprite line setting it and an
+exactly-8-sprite line NOT setting it), and scroll-register increment/copy
+behavior (coarse-X increment + wrap + NT-bit flip in both directions,
+fine-Y increment, the coarse-Y-29-flips-NT-bit vs. coarse-Y-31-no-flip
+special cases, and that `ppu_copy_horiz_v`/`ppu_copy_vert_v` each only
+touch their own half of the register). Also spot-checked
+`render_bg_line_scrolled` directly against a known stripe-tile pattern.
+
+## Not yet implemented (deferred to a later Phase 6 sub-pass or Phase 8)
+
+- **Fine-X pixel-level horizontal scroll** (see scope note above -- coarse
+  8px-granularity scrolling works, sub-tile pixel shift doesn't yet).
+- **PPUMASK bits** (background/sprite-rendering-enable, left-column-clip,
+  greyscale, emphasis) are not consulted -- background and sprites always
+  render.
+- **Per-scanline cycle-accurate timing** (the current renderers are
+  "render the whole frame/scanline at once" batch operations, not driven by
+  actual CPU-cycle-interleaved PPU dot advancement; no vblank-timing
+  interaction yet either) -- Phase 8 (main loop) territory.
+- The real hardware's specific (buggy) sprite-overflow evaluation algorithm
+  is not replicated -- see the sprite-evaluation section above.

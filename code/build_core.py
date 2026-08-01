@@ -57,7 +57,12 @@ def declare_state(e):
               "CTRL_STROBE", "CTRL_SHIFT", "CTRL_STATE",
               "SCANLINE", "FRAME", "DECMODE", "HALT", "TRACEPC", "CYCLEACC",
               "SPR0_THIS", "RUN",
-              "BG_PATBASE", "BGTILE", "BGPALSEL", "BGP0", "BGP1", "BGCOL"]:
+              "BG_PATBASE", "BGTILE", "BGPALSEL", "BGP0", "BGP1", "BGCOL",
+              "SPR_PATBASE", "SPR_H", "SPR0_IN_RANGE",
+              "SK", "SX", "SPX", "SCOL", "SPAL", "SPRI", "SFLIPX",
+              "COMP_COL", "COMP_PAL", "COMP_FOUND", "COMP_PRI", "COMP_IS0",
+              "SPR_T1", "SPR_T2", "SPR_T3", "SPR_ROW",
+              "SC_T1", "SC_T2", "SC_T3", "SC_T4", "SC_TILECOL", "SC_FINEY"]:
         e.var(v)
     e.lst("RAM", [0] * 2048)
     e.lst("VRAM", [0] * 2048)
@@ -68,16 +73,18 @@ def declare_state(e):
     e.lst("PALRGB", NES_PALETTE)
     e.lst("SLCOL", [0] * 256)    # scanline palette-index buffer
     e.lst("SLBG", [0] * 256)     # background opaque flags
-    e.lst("SPRX", [0] * 8)
-    e.lst("SPRLO", [0] * 8)
-    e.lst("SPRHI", [0] * 8)
-    e.lst("SPRAT", [0] * 8)
-    e.lst("SPRID", [0] * 8)
+    # per-scanline sprite-evaluation results (up to 8 sprites), index 0-7:
+    e.lst("SPRX", [0] * 8)       # screen X of sprite's left edge
+    e.lst("SPRLO", [0] * 8)      # low bitplane byte for this scanline's row
+    e.lst("SPRHI", [0] * 8)      # high bitplane byte for this scanline's row
+    e.lst("SPRAT", [0] * 8)      # attribute byte (palette/priority/flip)
+    e.lst("SPRID", [0] * 8)      # original OAM index (0-63; 0 = sprite-0)
     e.var("SPRN")
     # framebuffer: 256x240, 1-indexed, pixel(x,y) = FB[y*256+x+1], stores the
     # resolved NES palette index (0-63) for that pixel, ready for a PALRGB
     # lookup at pen-flush time.
     e.lst("FB", [0] * (256 * 240))
+    e.lst("BGOP", [0] * (256 * 240))  # raw bg color-index (0-3) per pixel, for sprite priority/hit
     # bit-extraction table for pattern-table tile decode: PIXBIT_T[byte*8+bitpos+1]
     # = bit (7-bitpos) of byte, i.e. bitpos 0 is the LEFTMOST pixel of the row
     # (matches the CHR-ROM convention: bit 7 of the plane byte is the leftmost
@@ -652,6 +659,12 @@ def phase6_ppu_bg(e):
                         e.MUL(e.ADD(e.MUL(e.V("RB_ROW"), 8), e.V("RB_PY")), 256),
                         e.ADD(e.ADD(e.MUL(e.V("RB_COL"), 8), e.V("RB_PX")), 1))
                     e.repl(pxloop, "FB", fb_idx, e.V("RESULT"))
+                    # BGOP: raw pre-palette color-index (0-3), needed by sprite
+                    # compositing/priority/sprite-0-hit to know background
+                    # opacity independent of what the resolved color happens
+                    # to be (a legitimately-black background pixel is still
+                    # "opaque" -- only color-index 0 is transparent).
+                    e.repl(pxloop, "BGOP", fb_idx, e.V("BGCOL"))
                     e.chg(pxloop, "RB_PX", 1)
                 e.chg(pyloop, "RB_PY", 1)
             e.chg(colbody, "RB_COL", 1)
@@ -704,6 +717,302 @@ def phase6_ppu_bg(e):
     with e.UNTIL(s, e.EQ(e.V("FL_ROW"), 240)) as body:
         e.call(body, "flush_fb_row", row=e.V("FL_ROW"))
         e.chg(body, "FL_ROW", 1)
+    s.finalize()
+
+
+# =====================================================================
+# Phase 6b - sprites (OAM) + scrolling
+# =====================================================================
+def phase6b_sprites(e):
+    # ---- spr_update_patbase: sprite pattern-table base from PPUCTRL bit 3
+    # (only meaningful in 8x8 mode -- 8x16 mode derives the table from tile
+    # bit 0 instead, per real hardware) ----
+    s = e.defproc("spr_update_patbase", [])
+    ctx = e.IFELSE(s, e.EQ(e.MOD(e.IDIV(e.V("P_CTRL"), 8), 2), 1))
+    with ctx as b:
+        e.setv(b, "SPR_PATBASE", 4096)
+    with ctx.substack2() as b:
+        e.setv(b, "SPR_PATBASE", 0)
+    ctx2 = e.IFELSE(s, e.EQ(e.MOD(e.IDIV(e.V("P_CTRL"), 32), 2), 1))
+    with ctx2 as b:
+        e.setv(b, "SPR_H", 16)
+    with ctx2.substack2() as b:
+        e.setv(b, "SPR_H", 8)
+    s.finalize()
+
+    # ---- spr_fetch_planes idx sk row: row is the 0..(SPR_H-1) row WITHIN the
+    # sprite, already flip-adjusted by the caller. Writes SPRLO[idx]/SPRHI[idx]
+    # for OAM sprite `sk`'s tile row. Handles both 8x8 and 8x16 addressing. ----
+    s = e.defproc("spr_fetch_planes", ["idx", "sk", "row"])
+    e.setv(s, "SPR_T1", e.IT("OAM", e.ADD(e.MUL(e.ARG("sk"), 4), 2)))  # tile id
+    ctx = e.IFELSE(s, e.EQ(e.V("SPR_H"), 16))
+    with ctx as b:
+        # bank = tile bit0, tile_num = tile with bit0 cleared (tile - tile%2)
+        e.setv(b, "SPR_T2", e.MUL(e.MOD(e.V("SPR_T1"), 2), 4096))          # bank base
+        e.setv(b, "SPR_T3", e.SUB(e.V("SPR_T1"), e.MOD(e.V("SPR_T1"), 2)))  # tile_num
+        ctx2 = e.IFELSE(b, e.LT(e.ARG("row"), 8))
+        with ctx2 as c:
+            e.setv(c, "SPR_ROW", e.ARG("row"))
+        with ctx2.substack2() as c:
+            e.chg(c, "SPR_T3", 1)
+            e.setv(c, "SPR_ROW", e.SUB(e.ARG("row"), 8))
+        e.call(b, "ppu_read", a=e.ADD(e.V("SPR_T2"), e.ADD(e.MUL(e.V("SPR_T3"), 16), e.V("SPR_ROW"))))
+        e.repl(b, "SPRLO", e.ADD(e.ARG("idx"), 1), e.V("RESULT"))
+        e.call(b, "ppu_read", a=e.ADD(e.V("SPR_T2"), e.ADD(e.MUL(e.V("SPR_T3"), 16), e.ADD(e.V("SPR_ROW"), 8))))
+        e.repl(b, "SPRHI", e.ADD(e.ARG("idx"), 1), e.V("RESULT"))
+    with ctx.substack2() as b:
+        e.call(b, "ppu_read", a=e.ADD(e.V("SPR_PATBASE"), e.ADD(e.MUL(e.V("SPR_T1"), 16), e.ARG("row"))))
+        e.repl(b, "SPRLO", e.ADD(e.ARG("idx"), 1), e.V("RESULT"))
+        e.call(b, "ppu_read", a=e.ADD(e.V("SPR_PATBASE"), e.ADD(e.MUL(e.V("SPR_T1"), 16), e.ADD(e.ARG("row"), 8))))
+        e.repl(b, "SPRHI", e.ADD(e.ARG("idx"), 1), e.V("RESULT"))
+    s.finalize()
+
+    # ---- sprite_eval_line sl: populate SPRX/SPRLO/SPRHI/SPRAT/SPRID (<=8
+    # sprites) for scanline `sl` (0-239), set SPRN = count found, and set the
+    # PPUSTATUS sprite-overflow bit (bit5) if a 9th qualifying sprite exists.
+    # SPR0_IN_RANGE is set if OAM sprite 0 is among the ones drawn this line
+    # (needed by the sprite-0-hit test, since hit detection only applies when
+    # sprite 0 is actually visible on this scanline). ----
+    s = e.defproc("sprite_eval_line", ["sl"])
+    e.call(s, "spr_update_patbase")
+    e.setv(s, "SPRN", 0)
+    e.setv(s, "SPR0_IN_RANGE", 0)
+    e.setv(s, "SK", 0)
+    with e.UNTIL(s, e.EQ(e.V("SK"), 64)) as body:
+        e.setv(body, "SPR_T1", e.IT("OAM", e.ADD(e.MUL(e.V("SK"), 4), 1)))  # Y byte
+        e.setv(body, "SPR_T2", e.SUB(e.SUB(e.ARG("sl"), e.V("SPR_T1")), 1))  # row-in-sprite
+        with e.IF(body, e.AND(e.NOT(e.LT(e.V("SPR_T2"), 0)), e.LT(e.V("SPR_T2"), e.V("SPR_H")))) as hit:
+            ctx = e.IFELSE(hit, e.LT(e.V("SPRN"), 8))
+            with ctx as b:
+                e.setv(b, "SPR_T3", e.IT("OAM", e.ADD(e.MUL(e.V("SK"), 4), 3)))  # attr byte
+                # vertical flip = attr bit 7
+                ctx2 = e.IFELSE(b, e.EQ(e.MOD(e.IDIV(e.V("SPR_T3"), 128), 2), 1))
+                with ctx2 as c:
+                    e.setv(c, "SPR_ROW", e.SUB(e.SUB(e.V("SPR_H"), 1), e.V("SPR_T2")))
+                with ctx2.substack2() as c:
+                    e.setv(c, "SPR_ROW", e.V("SPR_T2"))
+                e.repl(b, "SPRID", e.ADD(e.V("SPRN"), 1), e.V("SK"))
+                e.repl(b, "SPRX", e.ADD(e.V("SPRN"), 1), e.IT("OAM", e.ADD(e.MUL(e.V("SK"), 4), 4)))
+                e.repl(b, "SPRAT", e.ADD(e.V("SPRN"), 1), e.V("SPR_T3"))
+                e.call(b, "spr_fetch_planes", idx=e.V("SPRN"), sk=e.V("SK"), row=e.V("SPR_ROW"))
+                with e.IF(b, e.EQ(e.V("SK"), 0)) as z:
+                    e.setv(z, "SPR0_IN_RANGE", 1)
+                e.chg(b, "SPRN", 1)
+            with ctx.substack2() as b:
+                e.setv(b, "P_STATUS", e.BOR(e.V("P_STATUS"), 32))  # overflow bit
+        e.chg(body, "SK", 1)
+    s.finalize()
+
+    # ---- composite_pixel sl x: composes the final FB pixel at (x,sl) from
+    # the already-evaluated sprite list + the background already rendered
+    # into FB/BGOP at that position. Also performs sprite-0-hit detection
+    # (sets PPUSTATUS bit 6). Must be called AFTER sprite_eval_line(sl) and
+    # AFTER the background for that pixel is already in FB/BGOP. ----
+    s = e.defproc("composite_pixel", ["sl", "x"])
+    e.setv(s, "COMP_FOUND", 0)
+    e.setv(s, "SK", 0)
+    with e.UNTIL(s, e.OR(e.EQ(e.V("SK"), e.V("SPRN")), e.EQ(e.V("SK"), 8))) as body:
+        e.setv(body, "SPX", e.IT("SPRX", e.ADD(e.V("SK"), 1)))
+        with e.IF(body, e.AND(e.NOT(e.LT(e.ARG("x"), e.V("SPX"))),
+                               e.LT(e.ARG("x"), e.ADD(e.V("SPX"), 8)))) as inrange:
+            e.setv(inrange, "SPR_T1", e.IT("SPRAT", e.ADD(e.V("SK"), 1)))
+            # horizontal flip = attr bit 6
+            ctx = e.IFELSE(inrange, e.EQ(e.MOD(e.IDIV(e.V("SPR_T1"), 64), 2), 1))
+            with ctx as b:
+                e.setv(b, "SPR_T2", e.SUB(7, e.SUB(e.ARG("x"), e.V("SPX"))))
+            with ctx.substack2() as b:
+                e.setv(b, "SPR_T2", e.SUB(e.ARG("x"), e.V("SPX")))
+            e.setv(inrange, "SPR_T3", e.ADD(
+                e.IT("PIXBIT_T", e.ADD(e.MUL(e.IT("SPRLO", e.ADD(e.V("SK"), 1)), 8), e.ADD(e.V("SPR_T2"), 1))),
+                e.MUL(e.IT("PIXBIT_T", e.ADD(e.MUL(e.IT("SPRHI", e.ADD(e.V("SK"), 1)), 8), e.ADD(e.V("SPR_T2"), 1))), 2)))
+            with e.IF(inrange, e.NOT(e.EQ(e.V("SPR_T3"), 0))) as opaque:
+                # sprite-0-hit: opaque sprite-0 pixel over opaque bg pixel,
+                # not at x=255 (real hardware quirk), rendering must be on.
+                with e.IF(opaque, e.AND(e.EQ(e.IT("SPRID", e.ADD(e.V("SK"), 1)), 0),
+                                         e.AND(e.NOT(e.EQ(e.IT("BGOP", e.ADD(e.MUL(e.ARG("sl"), 256), e.ADD(e.ARG("x"), 1))), 0)),
+                                               e.NOT(e.EQ(e.ARG("x"), 255))))) as hit0:
+                    e.setv(hit0, "P_STATUS", e.BOR(e.V("P_STATUS"), 64))
+                with e.IF(opaque, e.EQ(e.V("COMP_FOUND"), 0)) as first:
+                    e.setv(first, "COMP_FOUND", 1)
+                    e.setv(first, "COMP_COL", e.V("SPR_T3"))
+                    e.setv(first, "COMP_PAL", e.ADD(16, e.MUL(e.MOD(e.V("SPR_T1"), 4), 4)))
+                    e.setv(first, "COMP_PRI", e.MOD(e.IDIV(e.V("SPR_T1"), 32), 2))
+        e.chg(body, "SK", 1)
+    # decide final pixel: sprite wins if found AND (in-front OR bg transparent)
+    e.setv(s, "SPR_T1", e.ADD(e.MUL(e.ARG("sl"), 256), e.ADD(e.ARG("x"), 1)))
+    ctx = e.IFELSE(s, e.AND(e.EQ(e.V("COMP_FOUND"), 1),
+                             e.OR(e.EQ(e.V("COMP_PRI"), 0), e.EQ(e.IT("BGOP", e.V("SPR_T1")), 0))))
+    with ctx as b:
+        e.call(b, "ppu_read", a=e.ADD(0x3F00, e.ADD(e.V("COMP_PAL"), e.V("COMP_COL"))))
+        e.repl(b, "FB", e.V("SPR_T1"), e.V("RESULT"))
+    s.finalize()
+
+    # ---- render_sprites_line sl: evaluates + composites sprites for one
+    # already-background-rendered scanline. ----
+    s = e.defproc("render_sprites_line", ["sl"])
+    e.call(s, "sprite_eval_line", sl=e.ARG("sl"))
+    e.setv(s, "SX", 0)
+    with e.UNTIL(s, e.EQ(e.V("SX"), 256)) as body:
+        e.call(body, "composite_pixel", sl=e.ARG("sl"), x=e.V("SX"))
+        e.chg(body, "SX", 1)
+    s.finalize()
+
+    # ---- render_sprites_frame: sprite pass over all 240 scanlines (call
+    # AFTER render_bg_frame, since compositing reads FB/BGOP). ----
+    e.var("RS_SL")
+    s = e.defproc("render_sprites_frame", [])
+    e.setv(s, "RS_SL", 0)
+    with e.UNTIL(s, e.EQ(e.V("RS_SL"), 240)) as body:
+        e.call(body, "render_sprites_line", sl=e.V("RS_SL"))
+        e.chg(body, "RS_SL", 1)
+    s.finalize()
+
+    # =================================================================
+    # Loopy v/t/x/w scroll registers: coarse-X/Y increment with page-wrap
+    # and nametable-flip, applied during rendering. All arithmetic (no
+    # bitwise tables) since P_V/P_T can hold up to 15 bits, out of range
+    # for the 8-bit-operand BAND/BOR lookup tables -- same clear-then-set
+    # arithmetic pattern Phase 2's ppu_reg_write already uses for P_T.
+    # v/t bit layout: fine_Y(3) | NT_Y(1) | NT_X(1) | coarse_Y(5) | coarse_X(5)
+    # =================================================================
+    s = e.defproc("ppu_copy_horiz_v", [])
+    e.setv(s, "SC_T1", e.MOD(e.V("P_T"), 32))                         # T coarse X
+    e.setv(s, "SC_T2", e.MUL(e.MOD(e.IDIV(e.V("P_T"), 1024), 2), 1024))  # T NT-X bit
+    e.setv(s, "SC_T3", e.MOD(e.V("P_V"), 32))                         # V coarse X
+    e.setv(s, "SC_T4", e.MUL(e.MOD(e.IDIV(e.V("P_V"), 1024), 2), 1024))  # V NT-X bit
+    e.setv(s, "P_V", e.ADD(e.SUB(e.SUB(e.V("P_V"), e.V("SC_T3")), e.V("SC_T4")),
+                           e.ADD(e.V("SC_T1"), e.V("SC_T2"))))
+    s.finalize()
+
+    s = e.defproc("ppu_copy_vert_v", [])
+    e.setv(s, "SC_T1", e.MUL(e.MOD(e.IDIV(e.V("P_T"), 32), 32), 32))       # T coarse Y
+    e.setv(s, "SC_T2", e.MUL(e.MOD(e.IDIV(e.V("P_T"), 2048), 2), 2048))    # T NT-Y bit
+    e.setv(s, "SC_T3", e.MUL(e.IDIV(e.V("P_T"), 4096), 4096))              # T fine Y
+    e.setv(s, "SC_T4", e.MUL(e.MOD(e.IDIV(e.V("P_V"), 32), 32), 32))       # V coarse Y (to remove)
+    e.chg(s, "SC_T4", e.MUL(e.MOD(e.IDIV(e.V("P_V"), 2048), 2), 2048))     # + V NT-Y bit (to remove)
+    e.chg(s, "SC_T4", e.MUL(e.IDIV(e.V("P_V"), 4096), 4096))               # + V fine Y (to remove)
+    e.setv(s, "P_V", e.ADD(e.SUB(e.V("P_V"), e.V("SC_T4")),
+                           e.ADD(e.V("SC_T1"), e.ADD(e.V("SC_T2"), e.V("SC_T3")))))
+    s.finalize()
+
+    s = e.defproc("ppu_scanline_inc_coarse_x", [])
+    e.setv(s, "SC_T1", e.MOD(e.V("P_V"), 32))  # coarse X
+    ctx = e.IFELSE(s, e.EQ(e.V("SC_T1"), 31))
+    with ctx as b:
+        # wrap coarse X to 0 AND flip the NT-X bit (bit 10 / value 1024)
+        e.setv(b, "SC_T2", e.MOD(e.IDIV(e.V("P_V"), 1024), 2))
+        ctx2 = e.IFELSE(b, e.EQ(e.V("SC_T2"), 0))
+        with ctx2 as c:
+            e.setv(c, "P_V", e.ADD(e.SUB(e.V("P_V"), 31), 1024))
+        with ctx2.substack2() as c:
+            e.setv(c, "P_V", e.SUB(e.SUB(e.V("P_V"), 31), 1024))
+    with ctx.substack2() as b:
+        e.chg(b, "P_V", 1)
+    s.finalize()
+
+    s = e.defproc("ppu_scanline_inc_y", [])
+    e.setv(s, "SC_T1", e.IDIV(e.V("P_V"), 4096))  # fine Y (0-7)
+    ctx = e.IFELSE(s, e.LT(e.V("SC_T1"), 7))
+    with ctx as b:
+        e.chg(b, "P_V", 4096)  # fine Y += 1
+    with ctx.substack2() as b:
+        e.chg(b, "P_V", -28672)  # clear fine Y to 0 (subtract 7*4096)
+        e.setv(b, "SC_T2", e.MOD(e.IDIV(e.V("P_V"), 32), 32))  # coarse Y
+        ctx2 = e.IFELSE(b, e.EQ(e.V("SC_T2"), 29))
+        with ctx2 as c:
+            # wrap to 0 AND flip NT-Y bit (bit 11 / value 2048)
+            e.setv(c, "SC_T3", e.MOD(e.IDIV(e.V("P_V"), 2048), 2))
+            ctx3 = e.IFELSE(c, e.EQ(e.V("SC_T3"), 0))
+            with ctx3 as d:
+                e.setv(d, "P_V", e.ADD(e.SUB(e.V("P_V"), e.MUL(29, 32)), 2048))
+            with ctx3.substack2() as d:
+                e.setv(d, "P_V", e.SUB(e.SUB(e.V("P_V"), e.MUL(29, 32)), 2048))
+        with ctx2.substack2() as c:
+            ctx4 = e.IFELSE(c, e.EQ(e.V("SC_T2"), 31))
+            with ctx4 as d:
+                # out-of-range coarse Y (software wrote it directly): wrap to
+                # 0 with NO nametable-Y flip, matching real hardware quirk.
+                e.setv(d, "P_V", e.SUB(e.V("P_V"), e.MUL(31, 32)))
+            with ctx4.substack2() as d:
+                e.chg(d, "P_V", 32)  # coarse Y += 1
+    s.finalize()
+
+    # ---- bg_setup_tile_v: like bg_setup_tile, but reads tile/attribute
+    # addresses from the CURRENT loopy V register instead of explicit
+    # col/row/nametable-0 literals -- this is what makes rendering scroll-
+    # and nametable-select aware. ----
+    s = e.defproc("bg_setup_tile_v", [])
+    e.call(s, "ppu_read", a=e.ADD(0x2000, e.MOD(e.V("P_V"), 4096)))
+    e.setv(s, "BGTILE", e.V("RESULT"))
+    e.setv(s, "SC_T1", e.MOD(e.V("P_V"), 32))                     # coarse X
+    e.setv(s, "SC_T2", e.MOD(e.IDIV(e.V("P_V"), 32), 32))         # coarse Y
+    e.setv(s, "SC_T3", e.MUL(e.MOD(e.IDIV(e.V("P_V"), 1024), 4), 1024))  # NT select bits
+    e.call(s, "ppu_read", a=e.ADD(0x23C0, e.ADD(e.V("SC_T3"),
+                                                 e.ADD(e.MUL(e.IDIV(e.V("SC_T2"), 4), 8),
+                                                       e.IDIV(e.V("SC_T1"), 4)))))
+    e.setv(s, "SC_T4", e.V("RESULT"))  # attribute byte
+    e.setv(s, "U2", e.ADD(e.MUL(e.MOD(e.IDIV(e.V("SC_T2"), 2), 2), 4),
+                          e.MUL(e.MOD(e.IDIV(e.V("SC_T1"), 2), 2), 2)))
+    ctx = e.IFELSE(s, e.EQ(e.V("U2"), 0))
+    with ctx as b:
+        e.setv(b, "U3", 1)
+    with ctx.substack2() as b:
+        c2 = e.IFELSE(b, e.EQ(e.V("U2"), 2))
+        with c2 as c:
+            e.setv(c, "U3", 4)
+        with c2.substack2() as c:
+            c3 = e.IFELSE(c, e.EQ(e.V("U2"), 4))
+            with c3 as d:
+                e.setv(d, "U3", 16)
+            with c3.substack2() as d:
+                e.setv(d, "U3", 64)
+    e.setv(s, "BGPALSEL", e.MOD(e.IDIV(e.V("SC_T4"), e.V("U3")), 4))
+    s.finalize()
+
+    # ---- render_bg_line_scrolled sl: renders one on-screen scanline using
+    # the current P_V (coarse X/Y + nametable select + fine Y), incrementing
+    # coarse X after each of the 32 tiles and coarse/fine Y once at the end
+    # (matching the real PPU's per-tile/per-scanline increment timing). ----
+    s = e.defproc("render_bg_line_scrolled", ["sl"])
+    e.call(s, "bg_update_patbase")
+    e.call(s, "ppu_copy_horiz_v")
+    e.setv(s, "SC_FINEY", e.IDIV(e.V("P_V"), 4096))
+    e.setv(s, "SC_TILECOL", 0)
+    with e.UNTIL(s, e.EQ(e.V("SC_TILECOL"), 32)) as body:
+        e.call(body, "bg_setup_tile_v")
+        e.call(body, "ppu_read", a=e.ADD(e.V("BG_PATBASE"),
+                                          e.ADD(e.MUL(e.V("BGTILE"), 16), e.V("SC_FINEY"))))
+        e.setv(body, "BGP0", e.V("RESULT"))
+        e.call(body, "ppu_read", a=e.ADD(e.V("BG_PATBASE"),
+                                          e.ADD(e.MUL(e.V("BGTILE"), 16), e.ADD(e.V("SC_FINEY"), 8))))
+        e.setv(body, "BGP1", e.V("RESULT"))
+        e.setv(body, "RB_PX", 0)
+        with e.UNTIL(body, e.EQ(e.V("RB_PX"), 8)) as pxloop:
+            e.call(pxloop, "bg_pixel_val", px=e.V("RB_PX"))
+            fb_idx = e.ADD(e.MUL(e.ARG("sl"), 256),
+                           e.ADD(e.ADD(e.MUL(e.V("SC_TILECOL"), 8), e.V("RB_PX")), 1))
+            e.repl(pxloop, "FB", fb_idx, e.V("RESULT"))
+            e.repl(pxloop, "BGOP", fb_idx, e.V("BGCOL"))
+            e.chg(pxloop, "RB_PX", 1)
+        e.call(body, "ppu_scanline_inc_coarse_x")
+        e.chg(body, "SC_TILECOL", 1)
+    e.call(s, "ppu_scanline_inc_y")
+    s.finalize()
+
+    # ---- render_bg_frame_scrolled: the scroll-aware full-frame background
+    # renderer. Caller is expected to have already written PPUSCROLL/PPUADDR
+    # (which set up P_T/P_X) before calling this -- it performs the real
+    # pre-render-line vertical-copy (v <- t, full) once at frame start, then
+    # a horizontal-only copy (v <- t) at the start of every scanline (both
+    # match real 2C02 timing points), so a main loop that mutates P_T
+    # mid-frame between scanline calls gets real split-scroll behavior. ----
+    e.var("RBS_SL")
+    s = e.defproc("render_bg_frame_scrolled", [])
+    e.call(s, "ppu_copy_vert_v")
+    e.setv(s, "RBS_SL", 0)
+    with e.UNTIL(s, e.EQ(e.V("RBS_SL"), 240)) as body:
+        e.call(body, "render_bg_line_scrolled", sl=e.V("RBS_SL"))
+        e.chg(body, "RBS_SL", 1)
     s.finalize()
 
 

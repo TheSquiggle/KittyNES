@@ -50,9 +50,15 @@ phase-by-phase status. As of the last update:
   list, plus a batched (per-run, not per-pixel) `flush_fb_to_pen` Pen output.
   11-check verification suite in `code/test_ppu_bg.py`, full-frame stress test
   (960 tiles, 61,440 pixels) completes cleanly. See `docs/nes_ppu_notes.md`.
-  **Not yet done:** scrolling (register plumbing exists, renderer doesn't
-  read it yet), multi-nametable, PPUMASK bits, sprites/OAM, per-scanline
-  timing — all explicitly deferred, see the doc's "Not yet implemented".
+- **Phase 6b (sprites + scrolling): DONE, verified** — OAM sprite evaluation
+  (<=8/scanline, overflow flag), 8x8/8x16 tile decode with flip support,
+  background compositing with correct priority-bit and sprite-0-hit
+  behavior, and the loopy v/t/x/w coarse-scroll register increment/copy
+  logic (PPUSCROLL/PPUADDR write-twice-latch semantics were already done in
+  Phase 2). 22-check verification suite in `code/test_ppu_sprites.py`, all
+  pass. See `docs/nes_ppu_notes.md`. **Not yet done:** fine-X sub-tile pixel
+  scroll (coarse 8px scrolling works), PPUMASK bits, per-scanline
+  cycle-accurate timing (Phase 8 territory).
 - Phase 7 (cartridge/.nes loader): not started.
 - Phase 8 (main loop, CPU/PPU timing, NMI-on-vblank, framebuffer flush): not started.
 

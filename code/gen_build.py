@@ -12,8 +12,9 @@ BC.phase1_tables(e)
 BC.phase2_bus(e)
 BC.phase3_cpu(e)
 BC.phase6_ppu_bg(e)
+BC.phase6b_sprites(e)
 
-print("blocks after phase1-3+6a:", len(e.t.blocks))
+print("blocks after phase1-3+6a+6b:", len(e.t.blocks))
 
 out = r"D:\KittyNES\progress\nes_emulator_wip_phase3_full.sb3"
 e.save(out)
