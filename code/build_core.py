@@ -1338,3 +1338,88 @@ def _emit_op(e, b, m):
         e.setv(b, "SP", V("X"))
     else:
         raise RuntimeError("unhandled mnemonic " + m)
+
+
+# =====================================================================
+# Phase 8 - main loop: ties CPU + PPU + bus together with 3:1 PPU:CPU
+# timing (approximated per-scanline, not per-dot -- see docs/main_loop.md),
+# vblank/NMI at scanline 241, and a Pen flush once per frame.
+# =====================================================================
+CYCLES_PER_SCANLINE = 341 / 3.0  # 113.667 CPU cycles per 341 PPU dots
+
+
+def phase8_main_loop(e):
+    e.var("CPU_TOTAL")  # running total CPU cycles this scanline (fractional)
+
+    # ---- nes_init: power-on reset of CPU + PPU + timing state. Call once
+    # after the cartridge is loaded (Phase 7), before the main loop starts. ----
+    s = e.defproc("nes_init", [])
+    e.call(s, "cpu_reset")
+    e.setv(s, "SCANLINE", 0)
+    e.setv(s, "FRAME", 0)
+    e.setv(s, "CPU_TOTAL", 0)
+    e.setv(s, "P_STATUS", 0)
+    e.setv(s, "P_CTRL", 0)
+    e.setv(s, "P_MASK", 0)
+    e.setv(s, "P_V", 0)
+    e.setv(s, "P_T", 0)
+    e.setv(s, "P_X", 0)
+    e.setv(s, "P_W", 0)
+    e.setv(s, "NMI_PENDING", 0)
+    e.setv(s, "IRQ_PENDING", 0)
+    s.finalize()
+
+    # ---- run_scanline: runs CPU instructions until ~113.667 CPU cycles have
+    # elapsed (== 341 PPU dots == one scanline), then processes whatever
+    # happens at the CURRENT scanline number (render if visible, set/clear
+    # vblank + fire NMI at 241, clear status + copy_vert_v at the pre-render
+    # line 261), then advances SCANLINE (wrapping 0-261) and, on wrap,
+    # FRAME + a Pen flush. This is scanline-granularity, not cycle-exact
+    # dot-granularity -- see docs/main_loop.md for why and what that costs. ----
+    s = e.defproc("run_scanline", [])
+    with e.UNTIL(s, e.NOT(e.LT(e.V("CPU_TOTAL"), CYCLES_PER_SCANLINE))) as body:
+        e.call(body, "cpu_step")
+        e.chg(body, "CPU_TOTAL", e.V("CYCLES"))
+    e.chg(s, "CPU_TOTAL", -CYCLES_PER_SCANLINE)  # carry the fractional remainder
+
+    with e.IF(s, e.LT(e.V("SCANLINE"), 240)) as vis:
+        with e.IF(vis, e.EQ(e.MOD(e.IDIV(e.V("P_MASK"), 8), 2), 1)) as bgon:
+            e.call(bgon, "render_bg_line_scrolled", sl=e.V("SCANLINE"))
+        with e.IF(vis, e.EQ(e.MOD(e.IDIV(e.V("P_MASK"), 16), 2), 1)) as spon:
+            e.call(spon, "render_sprites_line", sl=e.V("SCANLINE"))
+    with e.IF(s, e.EQ(e.V("SCANLINE"), 241)) as vb:
+        e.setv(vb, "P_STATUS", e.BOR(e.V("P_STATUS"), 128))
+        with e.IF(vb, e.EQ(e.MOD(e.IDIV(e.V("P_CTRL"), 128), 2), 1)) as nmion:
+            e.setv(nmion, "NMI_PENDING", 1)
+    with e.IF(s, e.EQ(e.V("SCANLINE"), 261)) as pre:
+        # clear vblank(bit7), sprite-0-hit(bit6), overflow(bit5) in one shot:
+        # P_STATUS mod 32 keeps only the low 5 (unused/open) bits.
+        e.setv(pre, "P_STATUS", e.MOD(e.V("P_STATUS"), 32))
+        e.call(pre, "ppu_copy_vert_v")
+
+    e.chg(s, "SCANLINE", 1)
+    with e.IF(s, e.GT(e.V("SCANLINE"), 261)) as wrap:
+        e.setv(wrap, "SCANLINE", 0)
+        e.chg(wrap, "FRAME", 1)
+        e.call(wrap, "flush_fb_to_pen")
+    s.finalize()
+
+    # ---- run_frame: exactly 262 scanlines (one full NTSC frame). ----
+    e.var("RF_I")
+    s = e.defproc("run_frame", [])
+    e.setv(s, "RF_I", 0)
+    with e.UNTIL(s, e.EQ(e.V("RF_I"), 262)) as body:
+        e.call(body, "run_scanline")
+        e.chg(body, "RF_I", 1)
+    s.finalize()
+
+    # ---- top-level entry point: init once, then run frames until the RUN
+    # flag is cleared (a real Scratch "when green flag clicked" hat calling
+    # this would loop forever; RUN lets a test harness stop it deterministically). ----
+    s = e.script("event_whenflagclicked")
+    e.call(s, "nes_init")
+    e.setv(s, "RUN", 1)
+    with e.UNTIL(s, e.EQ(e.V("RUN"), 0)) as body:
+        e.call(body, "ctrl_poll")
+        e.call(body, "run_frame")
+    s.finalize()

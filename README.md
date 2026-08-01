@@ -1,86 +1,109 @@
 # KittyNES — NES Emulator in Vanilla Scratch 3.0
 
-Goal: a full NES (Nintendo Entertainment System) emulator built as a real, loadable
+A full NES (Nintendo Entertainment System) emulator built as a real, loadable
 `.sb3` Scratch 3.0 project — pure block logic, no TurboWarp JS extension.
 
-This directory is the durable home for all progress reports, generated code,
-research notes, and intermediate/final build artifacts for the project. It is
-updated continuously as the background build agent works through phases.
+**v1 status: all 8 planned phases done and verified.** Definitive artifact:
+[`progress/nes_emulator.sb3`](progress/nes_emulator.sb3).
 
 ## Directory layout
 
 - `code/` — Python generation scripts (the actual generator source of truth) and
   the `lib.py` library (Emu wrapper over the raw sb3_builder primitives) used to
-  construct `.sb3` files programmatically. Current canonical generator is
-  `code/build_core.py` (driven by `code/gen_build.py`) + `code/tables6502.py`
-  (opcode table) + `code/test_cpu.py` (Phase 4 correctness suite, run via
-  `code/interp.py`, a Python re-implementation of the Scratch VM that walks the
-  real generated block graph). `code/gen_full.py` and `code/gen_phase1_2.py` are
-  an earlier, simpler, self-contained generator (phases 1-4, no mapper/PPU
-  register scaffolding) kept for reference/checkpoints but superseded by
-  `build_core.py` going forward.
-- `progress/` — intermediate and final `.sb3` build artifacts, one per validated
-  milestone, plus `PROGRESS_LOG.md` with a running phase-by-phase log.
-- `research/` — notes on the 6502 ISA, NES memory map, PPU behavior, mapper specs,
-  and any Scratch-specific workaround research (bitwise ops, 2D-array emulation,
-  function-return-value emulation, etc.).
-- `docs/` — design docs: architecture decisions, data layouts (list schemas),
-  opcode tables, known limitations.
+  construct `.sb3` files programmatically. Canonical generator: `code/build_core.py`
+  (all 8 phases' block-graph generation) driven by `code/gen_build.py`, plus
+  `code/tables6502.py` (opcode table) and `code/ines_loader.py` (cartridge
+  loader, Phase 7). Every phase has a matching `code/test_*.py` verification
+  suite run via `code/interp.py` (a from-scratch Python re-implementation of
+  the subset of Scratch VM behavior this project emits — walks the *actual*
+  generated block graph, not a re-derivation of the logic; it caught every
+  real bug found during this build, see `progress/PROGRESS_LOG.md`).
+  `code/gen_full.py`/`code/gen_phase1_2.py` are an earlier, simpler,
+  self-contained generator (phases 1-4 only, no mapper/PPU scaffolding) kept
+  for reference but superseded by `build_core.py`.
+- `progress/` — intermediate per-milestone `.sb3` checkpoints, the final
+  `nes_emulator.sb3`, and `PROGRESS_LOG.md` (detailed phase-by-phase log,
+  including every bug found and fixed along the way).
+- `docs/` — design docs: `NES_ARCHITECTURE_AND_EMULATION.md` and
+  `6502_opcode_table.md` (reference material), `mapper_specs.md`,
+  `nes_ppu_notes.md`, `cartridge_loader.md`, `main_loop.md` (per-phase design
+  writeups with the "what's NOT implemented / known limitations" for each).
+- `research/` — Scratch-specific workaround research (currently empty; the
+  workarounds that emerged — lookup tables for bitwise ops, flat 1-indexed
+  lists for 2D data, `RESULT`-style globals for return values, disjoint
+  scratch-temp-variable namespaces per call-chain "layer" — are documented
+  inline in `docs/` and `PROGRESS_LOG.md` instead).
 
-## Status
+## Status by phase
 
-See [`progress/PROGRESS_LOG.md`](progress/PROGRESS_LOG.md) for the current
-phase-by-phase status. As of the last update:
+See [`progress/PROGRESS_LOG.md`](progress/PROGRESS_LOG.md) for full detail,
+bug-by-bug. Summary:
 
-- **Phase 1 (bitwise-op lookup tables): DONE, validated**
-- **Phase 2 (memory bus + PPU register stubs + mapper dispatch scaffolding): DONE, validated**
-- **Phase 3 (6502 CPU core, all 151 official opcodes/13 addressing modes/7 flags/NMI+IRQ+reset): DONE, validated**
-- **Phase 4 (CPU correctness verification): DONE — 36-check hand-authored test suite
-  (all addressing modes, ADC/SBC w/ signed-overflow, CMP/CPX/CPY, shifts/rotates,
-  stack, JSR/RTS, BIT, branches) passes 100% against the actual generated block
-  graph via `code/interp.py`.**
-- **Phase 5 (mappers: NROM/UxROM/CNROM/MMC1): DONE, verified** — dedicated
-  `code/test_mappers.py` suite (same interp.py-against-real-block-graph
-  approach as the CPU suite) passes for all 4 mappers, including MMC1's
-  5-write serial-shift protocol and bit7-reset case. Found and fixed a real
-  bug in CNROM bank selection along the way (see `docs/mapper_specs.md`).
-- **Phase 6a (PPU background rendering): DONE, verified** — pattern-table tile
-  decode (lookup-table bitplane extraction), attribute-table palette-group
-  resolution, and a `render_bg_frame` proc filling a 256x240 `FB` framebuffer
-  list, plus a batched (per-run, not per-pixel) `flush_fb_to_pen` Pen output.
-  11-check verification suite in `code/test_ppu_bg.py`, full-frame stress test
-  (960 tiles, 61,440 pixels) completes cleanly. See `docs/nes_ppu_notes.md`.
-- **Phase 6b (sprites + scrolling): DONE, verified** — OAM sprite evaluation
-  (<=8/scanline, overflow flag), 8x8/8x16 tile decode with flip support,
-  background compositing with correct priority-bit and sprite-0-hit
-  behavior, and the loopy v/t/x/w coarse-scroll register increment/copy
-  logic (PPUSCROLL/PPUADDR write-twice-latch semantics were already done in
-  Phase 2). 22-check verification suite in `code/test_ppu_sprites.py`, all
-  pass. See `docs/nes_ppu_notes.md`. **Not yet done:** fine-X sub-tile pixel
-  scroll (coarse 8px scrolling works), PPUMASK bits, per-scanline
-  cycle-accurate timing (Phase 8 territory).
-- **Phase 7 (cartridge/.nes loader): DONE, verified** — `code/ines_loader.py`
-  parses a real iNES 1.0 header + PRG/CHR data and bakes it into an `Emu`
-  build. Tested against a synthetic in-memory `.nes` file (no real ROM
-  used/needed to build this); real-ROM testing is up to the user once they
-  supply one — see `docs/cartridge_loader.md`. 22-check verification suite,
-  all pass.
-- Phase 8 (main loop, CPU/PPU timing, NMI-on-vblank, framebuffer flush): not started.
+| Phase | What | Status |
+|---|---|---|
+| 1 | Bitwise-op lookup tables (AND/OR/XOR/shifts/rotates via precomputed lists) | DONE |
+| 2 | Memory bus, PPU register plumbing ($2000-$2007), mapper dispatch scaffolding | DONE |
+| 3 | 6502 CPU core: all 151 official opcodes, 13 addressing modes, 7 flags, reset/NMI/IRQ | DONE, verified (36 checks) |
+| 4 | CPU correctness verification (hand-authored suite, real block graph) | DONE |
+| 5 | Mappers: NROM, UxROM, CNROM, MMC1 (5-write serial-shift protocol) | DONE, verified (mapper suite) |
+| 6a | PPU background rendering (pattern-table decode, attribute palettes, framebuffer, Pen flush) | DONE, verified (11 checks) |
+| 6b | Sprites (OAM, priority, sprite-0-hit, overflow) + loopy scroll registers (coarse) | DONE, verified (22 checks) |
+| 7 | iNES cartridge (`.nes`) loader | DONE, verified (22 checks) |
+| 8 | Main loop: scanline-granularity CPU/PPU timing, vblank/NMI, Pen flush | DONE, verified (15 checks) |
 
-See `progress/PROGRESS_LOG.md` for the detailed bug-fix history from this
-session (several real correctness bugs were found and fixed while getting
-Phase 3/4 to actually pass: forward-referenced custom-block calls, global
-scratch-temp-variable collisions between CPU and bus code, and a lazy-list
-initialization-order bug that silently zeroed out the `BOOL`/`PRGRAM` lists).
+Every phase's generator code, design rationale, and test results are written
+up in detail in `progress/PROGRESS_LOG.md` and the relevant `docs/*.md` file.
+
+## What v1 is and isn't
+
+**Structurally verified**, every phase, via `interp.py` walking the real
+generated block graph (not a re-derivation — the actual `.sb3` logic):
+full 6502 CPU, NROM/UxROM/CNROM/MMC1 mapper support, PPU background+sprite
+rendering with priority/sprite-0-hit and coarse (8px-granularity) scrolling,
+a real iNES header parser + loader, and a scanline-driven main loop with
+correct vblank/NMI timing.
+
+**Not verified, and not achievable in this environment:** booting and
+playing an actual commercial game inside real Scratch/TurboWarp.
+`interp.py` is a legitimate, load-bearing verification tool — but it is a
+from-scratch Python re-implementation of the opcode subset this project
+emits, not the real Scratch VM, and no real `.nes` ROM was used anywhere in
+this build (by design — see `docs/cartridge_loader.md`). Loading
+`progress/nes_emulator.sb3` into actual Scratch/TurboWarp with a real,
+legally-obtained ROM and confirming it renders/plays is the one verification
+step this project cannot do for you.
+
+**Explicitly out of scope for v1** (see each phase's `docs/*.md` for
+details):
+- Fine-X sub-tile pixel-level horizontal scrolling (coarse 8px scrolling
+  works; real hardware's 16-bit background shift-register pixel blending
+  across tile boundaries doesn't yet).
+- Per-dot cycle-accurate PPU/CPU interleaving — timing is scanline-
+  granularity, so mid-scanline raster-split effects (specific to certain
+  games) won't render correctly, though between-scanline effects work fine.
+- The real 2C02's specific *buggy* sprite-overflow evaluation algorithm
+  (a simpler, always-correct overflow flag is implemented instead).
+- Four-screen mirroring's extra 2KB of VRAM (the mode is detected and
+  the mirror value set, but the extra VRAM isn't provisioned).
+- NES 2.0 header extensions (falls back to plain iNES 1.0 interpretation).
+- APU (audio) — not part of any phase in this project's plan.
 
 ## Build system
 
-Everything is generated programmatically from Python — never hand-edit the `.sb3`
-JSON directly. See `code/sb3_builder.py` for the block-graph construction API and
-`code/gen_phase1_2.py` for the first working generator script (bit-op tables +
-memory bus). Later phases extend this same approach: a Python-side opcode/data
-table drives programmatic generation of the (very repetitive) Scratch blocks,
-rather than hand-writing each one.
+Everything is generated programmatically from Python — never hand-edit the
+`.sb3` JSON directly. `code/lib.py` provides the `Emu` wrapper (variables,
+lists, custom-block/procedure definitions, control-flow sugar, binary-search
+opcode dispatch) over the raw `sb3_builder.py` primitives (from the
+`scratch-sb3` skill). `code/build_core.py` is organized as one function per
+phase (`phase1_tables`, `phase2_bus`, `phase3_cpu`, `phase6_ppu_bg`,
+`phase6b_sprites`, `phase8_main_loop`) plus `code/ines_loader.py` for Phase
+7, all driven by `code/gen_build.py` to produce
+`progress/nes_emulator_wip_phase3_full.sb3` (the working build) —
+`progress/nes_emulator.sb3` is a copy of that file taken at the v1
+milestone.
 
-Validate any `.sb3` output with the skill's `validate_sb3.py` structural checker
-before treating it as good.
+To rebuild: `python code/gen_build.py`. To reverify: run each
+`code/test_*.py` script (they all exit non-zero on any failing check and
+print a PASS/FAIL line per check). Always validate any `.sb3` output with
+the `scratch-sb3` skill's `validate_sb3.py` structural checker before
+treating it as good — this project's workflow ran it after every phase.

@@ -379,6 +379,63 @@ bg/sprites) -- no regressions.
 Real-ROM testing is explicitly left to the user once they supply their own
 legally-obtained `.nes` file (documented in `docs/cartridge_loader.md`).
 
+## 2026-08-01 — Phase 8: main loop — DONE, v1 complete
+
+Added `phase8_main_loop(e)` to `code/build_core.py`: `nes_init` (power-on
+reset, must run after Phase 7's `load_rom_into_emu`), `run_scanline`
+(scanline-granularity CPU/PPU timing -- runs CPU instructions accumulating
+real cycle counts until ~113.667 have elapsed = 341 PPU dots, then handles
+the current scanline: renders if visible and PPUMASK's bg/sprite-enable
+bits are set, sets vblank + fires NMI at 241, clears status bits + copies
+vertical scroll at the pre-render line 261, advances/wraps `SCANLINE`,
+flushes to Pen once per frame on wrap), `run_frame` (262 scanlines), and a
+top-level `when green flag clicked` script (`nes_init` then loop
+`ctrl_poll` + `run_frame` until a `RUN` flag clears, for deterministic test
+harness control).
+
+Full design writeup, including the explicit scanline-vs-dot-granularity
+timing tradeoff and what it costs (mid-scanline raster-split effects won't
+render correctly; between-scanline effects work fine), in new
+`docs/main_loop.md`.
+
+Verified with new `code/test_main_loop.py` (15 checks, all pass): a
+synthetic ROM enabling NMI+rendering that spins forever, run through
+`interp.py` for enough scanlines to cross into vblank -- confirms
+`SCANLINE` advances correctly, vblank sets at 241, the NMI handler actually
+executes (not just that the pending flag got set), `NMI_PENDING` clears
+after servicing, `FRAME` advances and wraps correctly after a full pass,
+vblank clears at the pre-render line, and NMI genuinely doesn't fire when
+disabled (separate ROM) while vblank still sets on schedule regardless.
+Reran the full existing suite (CPU/mappers/PPU-bg/PPU-sprites/cartridge
+loader) -- no regressions.
+
+**This is the last planned phase.** Copied the validated build to
+`progress/nes_emulator.sb3` as the definitive v1 artifact (2,880 blocks on
+the `CPU` sprite). `validate_sb3.py`: clean.
+
+### What v1 is and isn't
+
+Structurally-verified (every phase has a passing test suite exercising the
+real generated block graph via `interp.py`): full 6502 CPU (all official
+opcodes/addressing modes/flags), memory bus with NROM/UxROM/CNROM/MMC1
+mapper support, PPU background+sprite rendering with scrolling (coarse
+8px-granularity) and correct priority/sprite-0-hit behavior, a real iNES
+cartridge loader, and a scanline-granularity main loop with vblank/NMI.
+
+NOT verified (and can't be, in this environment): that this actually boots
+and plays a real commercial game inside real Scratch/TurboWarp.
+`interp.py` is a from-scratch Python re-implementation of the subset of
+Scratch VM behavior this project emits -- it's a legitimate and
+increasingly load-bearing verification tool (it caught every real bug found
+across every phase), but it is not the real Scratch VM, and no real `.nes`
+ROM was used anywhere in this build (per project scope -- see
+`docs/cartridge_loader.md`). Explicitly out of scope for v1: fine-X
+sub-tile pixel scrolling, per-dot cycle-accurate timing (mid-scanline
+raster effects), the real hardware's buggy sprite-overflow evaluation
+quirk, four-screen mirroring's extra VRAM, and NES 2.0 header extensions.
+See each phase's docs file for the full list under "Not yet implemented" /
+"known limitations".
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*
