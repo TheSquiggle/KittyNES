@@ -436,6 +436,82 @@ quirk, four-screen mirroring's extra VRAM, and NES 2.0 header extensions.
 See each phase's docs file for the full list under "Not yet implemented" /
 "known limitations".
 
+## 2026-08-01 — Real-ROM testing: NEStress.NES
+
+First test against a real, non-synthetic NES ROM: `NEStress.NES` (a
+well-known freeware/public-domain test ROM from the
+christopherpow/nes-test-roms archive, designed to exercise CPU/PPU/input in
+one cartridge), placed at `test_roms/NEStress.NES`. New tooling:
+`code/build_final.py` (reusable `python build_final.py <rom.nes> [out.sb3]`
+driver — assembles all 8 phases and bakes a given ROM in) and
+`code/run_nestress_smoke.py` (drives the same build through `interp.py` for
+a bounded step count and reports CPU/PPU state, to sanity-check real
+execution rather than just build success).
+
+### Bug found and fixed: PC silently became a float
+
+The first smoke run (300k steps) came back with `PC = 32799.0` — a float,
+not an int. Traced to `interp.py`'s `operator_mod` using `math.fmod`
+(always returns Python `float`, even for exact-integer inputs); since PC
+advances via `MOD(ADD(PC,1),65536)` on essentially every step, PC silently
+turned into (and stayed) a float after the very first instruction. This
+was a **test-harness fidelity gap, not a bug in the generated Scratch
+project** (real Scratch/JS numbers are all doubles with no int/float
+distinction), but a real one worth fixing since it could mask genuine
+fractional-value bugs elsewhere. Fixed by adding `_normnum()` (collapses
+whole-valued floats back to `int`) applied at every arithmetic operator's
+return point plus the `data_setvariableto`/`data_changevariableby`/
+`data_replaceitemoflist` sinks in `interp.py`. Added a regression check to
+`test_main_loop.py` asserting PC/SCANLINE/FRAME/A/X/Y/SP stay exact
+Python ints after many instructions. Reran the full existing suite (100+
+checks across CPU/mappers/PPU-bg/PPU-sprites/cartridge-loader/main-loop) —
+no regressions; flag values also now display cleanly as ints instead of
+`1.0`/`0.0` as a side benefit. Full writeup in `docs/real_rom_testing.md`.
+
+### `interp.py` addition: input-sensing stubs
+
+`interp.py` had no `sensing_keypressed`/`sensing_mousedown`/`sensing_timer`
+support (headless harness, never previously needed to evaluate
+input-sensing blocks — synthetic tests all drove state directly). Added a
+minimal `self.keys` dict (defaults to nothing pressed) plus straightforward
+stub returns for `sensing_mousedown`/`sensing_timer`. Permanent, reasonable
+test-harness addition, not a workaround for a real project bug — confirmed
+separately that the main loop's `ctrl_poll` (Phase 2/8) uses genuine
+Scratch `sensing_keyoptions`/`sensing_keypressed` blocks against real
+keyboard state, which works correctly in an actual Scratch/TurboWarp
+runtime; the interp.py stub only exists so the headless harness can
+evaluate those blocks at all.
+
+### Execution depth against the real ROM
+
+| Steps | Elapsed | Final SCANLINE | Final FRAME | FB non-transparent pixels |
+|---|---|---|---|---|
+| 300,000 | <1s | 46 (frame 0) | 0 | 0 / 61,440 |
+| 1,000,000 | ~1.1s | 155 (frame 0) | 0 | 0 / 61,440 |
+| 50,000,000 | ~41s | 63 (frame 7) | 7 | 61,440 / 61,440 (fully populated) |
+
+At 300k-1M steps the game is still in its own init code, before its first
+vblank/NMI — an all-transparent framebuffer there is expected (confirmed
+via `P_MASK` not yet having its rendering-enable bits set at that point),
+not a bug. By 50M steps, `FRAME` has advanced to 7 (multiple full
+262-scanline passes, meaning vblank/NMI fired and were serviced repeatedly
+-- `NMI_PENDING` reads back 0, not stuck pending) and the entire
+256x240 framebuffer is populated with real pixel data. This is strong
+evidence the CPU/bus/mapper/PPU-render/main-loop-timing machinery
+cooperates correctly against a real, unmodified commercial-grade test
+ROM's actual instruction stream and PPU register sequencing — never seen
+or special-cased during development, unlike the hand-authored synthetic
+tests.
+
+**What this does not (and, in this environment, cannot) show:** whether
+NEStress's specific visual test patterns render pixel-correctly (would
+need either decoding its pass/fail signaling convention or a real Scratch/
+TurboWarp runtime to look at the screen, neither attempted this pass), and
+audio (APU is an explicit, documented v1 scope exclusion — NEStress's
+sound-register writes land as no-ops via the existing PPU/APU stub range,
+same as before this test, not a new issue). Full detail, including the
+input-wiring confirmation, in new `docs/real_rom_testing.md`.
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*

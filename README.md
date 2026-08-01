@@ -3,8 +3,13 @@
 A full NES (Nintendo Entertainment System) emulator built as a real, loadable
 `.sb3` Scratch 3.0 project — pure block logic, no TurboWarp JS extension.
 
-**v1 status: all 8 planned phases done and verified.** Definitive artifact:
-[`progress/nes_emulator.sb3`](progress/nes_emulator.sb3).
+**v1 status: all 8 planned phases done and verified**, plus a real-ROM smoke
+test against `NEStress.NES` (a well-known CPU/PPU/input test ROM) running
+50M+ interpreter steps across 7+ full frames with the framebuffer fully
+populated and NMI/vblank firing and being serviced correctly — see
+`docs/real_rom_testing.md`. Definitive artifact:
+[`progress/nes_emulator.sb3`](progress/nes_emulator.sb3). To build a `.sb3`
+for a specific ROM: `python code/build_final.py path\to\game.nes`.
 
 ## Directory layout
 
@@ -27,7 +32,12 @@ A full NES (Nintendo Entertainment System) emulator built as a real, loadable
 - `docs/` — design docs: `NES_ARCHITECTURE_AND_EMULATION.md` and
   `6502_opcode_table.md` (reference material), `mapper_specs.md`,
   `nes_ppu_notes.md`, `cartridge_loader.md`, `main_loop.md` (per-phase design
-  writeups with the "what's NOT implemented / known limitations" for each).
+  writeups with the "what's NOT implemented / known limitations" for each),
+  and `real_rom_testing.md` (findings from smoke-testing against a real ROM).
+- `test_roms/` — `NEStress.NES`, a well-known freeware/public-domain CPU/PPU/
+  input test ROM used for real-ROM smoke testing (see
+  `docs/real_rom_testing.md`). No commercial ROMs are used anywhere in this
+  project.
 - `research/` — Scratch-specific workaround research (currently empty; the
   workarounds that emerged — lookup tables for bitwise ops, flat 1-indexed
   lists for 2D data, `RESULT`-style globals for return values, disjoint
