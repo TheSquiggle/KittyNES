@@ -39,10 +39,11 @@ phase-by-phase status. As of the last update:
   (all addressing modes, ADC/SBC w/ signed-overflow, CMP/CPX/CPY, shifts/rotates,
   stack, JSR/RTS, BIT, branches) passes 100% against the actual generated block
   graph via `code/interp.py`.**
-- **Phase 5 (mappers): PARTIALLY DONE inside Phase 2's bus — NROM/UxROM/CNROM
-  write dispatch and a real MMC1 shift-register implementation exist in
-  `build_core.py`'s `mapper_write`/`mmc1_apply`, but this is unverified by a
-  dedicated mapper test.**
+- **Phase 5 (mappers: NROM/UxROM/CNROM/MMC1): DONE, verified** — dedicated
+  `code/test_mappers.py` suite (same interp.py-against-real-block-graph
+  approach as the CPU suite) passes for all 4 mappers, including MMC1's
+  5-write serial-shift protocol and bit7-reset case. Found and fixed a real
+  bug in CNROM bank selection along the way (see `docs/mapper_specs.md`).
 - Phase 6 (PPU rendering — background/sprites to a pen framebuffer, scrolling):
   register read/write plumbing exists ($2000-$2007 emulated correctly including
   the PPUDATA read-buffer semantics), but no actual pixel rendering yet — NOT STARTED.

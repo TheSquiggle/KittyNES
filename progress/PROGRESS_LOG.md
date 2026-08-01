@@ -242,6 +242,34 @@ by a dedicated test yet — flagged as a follow-up before relying on it.
 - A dedicated Phase 5 mapper-switching test (bank-switch a UxROM/MMC1 ROM and
   verify the bus reads the newly-selected bank).
 
+## 2026-08-01 — Phase 5 (mapper) verification — DONE
+
+Wrote `code/test_mappers.py`, same approach/rigor as `code/test_cpu.py`: call
+the real generated `mapper_read`/`mapper_write`/`mmc1_apply`/`bus_read`/
+`bus_write`/`ppu_read` procs via `interp.py` (walks the actual block graph)
+with controlled PRG/CHR list contents (each bank filled with its own bank
+index as a marker byte) and check bank-selection behavior end-to-end.
+
+Covered: UxROM (mapper 2) bank select + fixed-last-bank window + mod-wrap on
+out-of-range bank values; CNROM (mapper 3) 8K CHR bank select; MMC1
+(mapper 1) power-on defaults, the 5-write serial-shift protocol for both the
+PRG register and CTRL/CHR0/CHR1 registers, 4K-vs-8K CHR mode switching, and
+the bit7 shift-register-reset case (including that it forces PRG mode 3).
+NROM (mapper 0) is implicitly covered by every CPU test's reset-vector fetch.
+
+**Bug found and fixed:** CNROM's bank-divisor guard used `e.OR(CHRBANKS, 1)`
+— `Emu.OR` is Scratch's *logical* `operator_or`, not a numeric default/clamp.
+Both operands were always truthy, so the divisor was always coerced to `1`,
+meaning `value mod 1 == 0` always — CNROM's CHR bank select was silently a
+no-op, always selecting bank 0 regardless of what was written. Fixed using
+the same boolean-coerced-to-number idiom `setnz` already relies on:
+`CHRBANKS + (CHRBANKS==0 ? 1 : 0)`. Full writeup in `docs/mapper_specs.md`.
+
+Result: **all mapper checks pass** (`ALL MAPPER CHECKS PASSED`). Rebuilt
+`progress/nes_emulator_wip_phase3_full.sb3` (1,933 blocks now) with the fix;
+`validate_sb3.py` clean. New doc: `docs/mapper_specs.md` (per-mapper register
+layout, bit-level protocol details, and the bug found).
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*

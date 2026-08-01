@@ -235,7 +235,13 @@ def phase2_bus(e):
             e.setv(c, "PRGB0", e.MOD(e.ARG("v"), e.V("PRGBANKS")))
         # CNROM (3)
         with e.IF(b, e.EQ(e.V("MAPPER"), 3)) as c:
-            e.setv(c, "U1", e.MUL(e.MOD(e.ARG("v"), e.OR(e.V("CHRBANKS"), 1)), 2))
+            # e.OR is LOGICAL/boolean or (operator_or) not numeric-default --
+            # using it here always forced the divisor to 1 (both operands
+            # truthy), so CHRB0 never changed. Real "default to 1 if zero"
+            # guard: CHRBANKS + (CHRBANKS==0 ? 1 : 0), same boolean-coercion
+            # idiom setnz uses (EQ(...) coerces to 0/1 in a numeric slot).
+            e.setv(c, "U1", e.MUL(e.MOD(e.ARG("v"),
+                                        e.ADD(e.V("CHRBANKS"), e.EQ(e.V("CHRBANKS"), 0))), 2))
             e.setv(c, "CHRB0", e.V("U1"))
             e.setv(c, "CHRB1", e.ADD(e.V("U1"), 1))
         # MMC1 (1)
