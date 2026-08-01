@@ -70,6 +70,7 @@ class Interp:
         self.max_steps = max_steps
         self.pen = []
         self.log = []
+        self.keys = {}  # simulated keyboard state for sensing_keypressed, e.g. {"space": True}
 
     # ---------------- helpers ----------------
     def _tick(self):
@@ -304,6 +305,17 @@ class Interp:
             return s[i - 1] if 1 <= i <= len(s) else ""
         if op == "operator_contains":
             return _str(I("STRING2", "")).lower() in _str(I("STRING1", "")).lower()
+        if op == "sensing_keypressed":
+            key_block = b["inputs"].get("KEY_OPTION")
+            key_name = None
+            if key_block and key_block[1] in self.blocks:
+                menu = self.blocks[key_block[1]]
+                key_name = menu.get("fields", {}).get("KEY_OPTION", [None])[0]
+            return bool(self.keys.get(key_name, False))
+        if op == "sensing_mousedown":
+            return False
+        if op == "sensing_timer":
+            return 0
         raise RuntimeError("unsupported reporter opcode: " + op)
 
 
