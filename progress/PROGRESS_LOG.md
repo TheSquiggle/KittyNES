@@ -351,6 +351,34 @@ per-scanline cycle-accurate timing (Phase 8), and real hardware's buggy
 sprite-overflow evaluation quirk (we implement a simpler always-correct
 version).
 
+## 2026-08-01 — Phase 7: cartridge (.nes) loader — DONE
+
+New `code/ines_loader.py`: `parse_ines` (iNES 1.0 header parser: magic
+check, PRG/CHR sizes, mapper number from flags6+flags7, mirroring including
+four-screen, battery flag, trainer handling, truncated-file detection),
+`build_synthetic_nes` (constructs a minimal valid `.nes` file in memory for
+testing -- no real ROM used or searched for, per project scope), and
+`load_rom_into_emu` (bakes a parsed ROM's PRG/CHR bytes into an `Emu`
+build's `PRG`/`CHR` lists via `set_list_items`, plus
+MAPPER/MIRROR/PRGBANKS/CHRBANKS/CHRRAM/PRGB0/PRGB1/CHRB0/CHRB1 power-on
+defaults).
+
+Full details, including the known four-screen-mirroring limitation (needs
+extra VRAM this project doesn't provision) and the NES-2.0-not-specially-
+handled caveat, in new `docs/cartridge_loader.md`.
+
+Verified with new `code/test_ines_loader.py` (22 checks: header-parsing
+correctness including a high mapper number needing both header-byte
+nibbles, CHR-RAM detection, four-screen mirroring, trainer handling,
+malformed-file rejection, and an end-to-end bake-then-bus-read/ppu-read
+check through `interp.py` with deterministic position-dependent PRG/CHR
+fill patterns so a wrong-bank or wrong-offset bug would actually be
+caught) -- **all pass**. Reran the full existing suite (CPU/mappers/PPU
+bg/sprites) -- no regressions.
+
+Real-ROM testing is explicitly left to the user once they supply their own
+legally-obtained `.nes` file (documented in `docs/cartridge_loader.md`).
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*

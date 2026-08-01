@@ -59,7 +59,12 @@ phase-by-phase status. As of the last update:
   pass. See `docs/nes_ppu_notes.md`. **Not yet done:** fine-X sub-tile pixel
   scroll (coarse 8px scrolling works), PPUMASK bits, per-scanline
   cycle-accurate timing (Phase 8 territory).
-- Phase 7 (cartridge/.nes loader): not started.
+- **Phase 7 (cartridge/.nes loader): DONE, verified** — `code/ines_loader.py`
+  parses a real iNES 1.0 header + PRG/CHR data and bakes it into an `Emu`
+  build. Tested against a synthetic in-memory `.nes` file (no real ROM
+  used/needed to build this); real-ROM testing is up to the user once they
+  supply one — see `docs/cartridge_loader.md`. 22-check verification suite,
+  all pass.
 - Phase 8 (main loop, CPU/PPU timing, NMI-on-vblank, framebuffer flush): not started.
 
 See `progress/PROGRESS_LOG.md` for the detailed bug-fix history from this
