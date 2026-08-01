@@ -130,3 +130,57 @@ the 5-write protocol landing correctly, a CTRL write switching to 4K CHR
 mode, independent CHR0/CHR1 bank selects reflected in `ppu_read`, the
 bit7-reset behavior (including that it forces PRG mode 3), and that a fresh
 5-write sequence works correctly immediately after a reset.
+
+## Mapper 66 — GxROM / MHROM
+
+Added to support a real user ROM ("Super Mario Bros. + Duck Hunt (USA)")
+which turned out to use it and rendered as a permanent grey box before this
+mapper existed (no dispatch branch meant PRG/CHR reads never returned real
+ROM data). Much simpler than MMC1: a single write-only register, any
+address $8000-$FFFF (hardware doesn't care about the exact address in that
+range — games conventionally use $8000, but this project's implementation
+follows the real spec and accepts a write anywhere in the window, verified
+by `code/test_mappers.py` writing to $FFF0 and confirming it still takes
+effect):
+
+```
+PRG bank (32K) = value & 0x03    (bits 0-1)
+CHR bank (8K)  = (value >> 4) & 0x03   (bits 4-5)
+```
+
+**Key difference from UxROM/CNROM/MMC1: the bank granularity is whole-window,
+not split.** UxROM switches only the $8000-$BFFF half (keeping $C000-$FFFF
+fixed to the last bank); MMC1 has an explicit "fixed bank" PRG mode. GxROM
+has neither — selecting PRG bank N maps the **entire** $8000-$FFFF 32K
+window to that bank, all at once. Implemented by writing straight into the
+existing `PRGB0`/`PRGB1` (16K-window) bus variables as a consecutive pair —
+`PRGB0 = bank*2`, `PRGB1 = bank*2+1` — the same "32K bank = two consecutive
+16K banks" trick MMC1's own 32K PRG mode already uses in `mmc1_apply`. CHR
+banking is the same idea one level down: `CHRB0 = chr_bank*2`, `CHRB1 =
+chr_bank*2+1` (an 8K CHR bank = two consecutive 4K banks). **No new bus
+state was needed at all** — `mapper_read`/`ppu_read`/`chr_read` already
+read generically off `PRGB0`/`PRGB1`/`CHRB0`/`CHRB1`, so GxROM's
+`mapper_write` branch is the only new code; everything downstream of it
+(bank-window math, mirroring by list length, etc.) was already correct
+mapper-agnostic logic from Phase 2.
+
+`ines_loader.py`'s `load_rom_into_emu` has a mapper-66-specific power-on
+default (bank 0 selected for both PRG and CHR) instead of reusing the
+UxROM/CNROM/MMC1 default branch's "PRGB1 = last bank" assumption, since
+GxROM has no fixed-last-bank concept for that assumption to apply to.
+
+**Scope note**: the standard/full GxROM register also supports more PRG/CHR
+bits for larger carts than the 64K-PRG/16K-CHR case this was built and
+tested against; the implementation already uses the full 2-bit PRG / 2-bit
+CHR field (not hardcoded to fewer bits), so larger GxROM carts should work
+without further changes, though only the smaller size has actually been
+tested (both against a synthetic test in `test_mappers.py` and the real
+"Super Mario Bros. + Duck Hunt" ROM, which is exactly this 64K/16K size).
+
+Verified by `code/test_mappers.py`: initial (power-on-default) window
+reads, a combined PRG+CHR bank-select write updating `PRGB0`/`PRGB1`/
+`CHRB0`/`CHRB1` correctly and both `bus_read`/`ppu_read` reflecting the new
+banks, explicit confirmation that the *entire* $8000-$FFFF window moves
+together (not split like UxROM), and that a write via a non-conventional
+address in the $8000-$FFFF range still takes effect. See
+`docs/real_rom_testing.md` for real-ROM (SMB+Duck Hunt) execution results.

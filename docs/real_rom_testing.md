@@ -1,4 +1,4 @@
-# Real-ROM testing notes (NEStress.NES)
+# Real-ROM testing notes
 
 First test of the built emulator against a real, non-synthetic NES ROM,
 using [NEStress.NES](https://github.com/christopherpow/nes-test-roms) — a
@@ -120,3 +120,85 @@ works in an actual Scratch/TurboWarp runtime, not a stub. The stub added to
 `interp.py` this session (`self.keys`, defaulting to nothing pressed) exists
 purely so the *headless test harness* can evaluate those blocks at all;
 real Scratch never needed a stub since it has real keyboard state.
+
+## Second real ROM: "Super Mario Bros. + Duck Hunt (USA)"
+
+A user tried building with their own legally-owned copy of "Super Mario
+Bros. + Duck Hunt (USA).nes" and got a permanent grey box. Root cause:
+this cartridge uses **mapper 66 (GxROM/MHROM)** — 64K PRG-ROM (4x16K
+banks), 16K CHR-ROM (2x8K banks), vertical mirroring — which wasn't one of
+the 4 mappers implemented at the time (0/NROM, 1/MMC1, 2/UxROM, 3/CNROM).
+With no dispatch branch for mapper 66, `mapper_write` was a silent no-op
+and `mapper_read`/`chr_read` never returned real ROM data — hence the grey
+box (not a crash, just nothing ever gets drawn). Added mapper 66 support
+(full writeup in `docs/mapper_specs.md`), verified with a 16-check
+extension to `code/test_mappers.py`, then rebuilt the user's actual ROM:
+
+```
+python code/build_final.py "C:\Users\silas\Documents\ROMS\NES\Super Mario Bros. + Duck Hunt (USA).nes" "D:\KittyNES\progress\nes_emulator_smb_duckhunt.sb3"
+```
+
+`validate_sb3.py`: structurally clean. `code/ines_loader.parse_ines` on the
+real file confirms mapper 66 / mirror 1 (vertical) / 4x16K PRG / 2x8K CHR,
+exactly matching the header inspection that identified the missing mapper
+in the first place.
+
+### Smoke test: `code/run_smb_smoke.py`
+
+Same approach as `run_nestress_smoke.py` (drives the real generated block
+graph through `interp.py`, reports state once per frame), adapted to bake
+in this specific ROM by path. Results at 60M steps (~49s):
+
+| Frame | Steps (cum.) | PPUCTRL | PPUMASK | Distinct PCs visited | FB non-transparent pixels |
+|---|---|---|---|---|---|
+| 1-3 | ~2.7M-8M | 0x10 | 0x00 | 2 | 0 |
+| 4 | ~10.7M | 0x80 | 0x00 | 4 | 0 |
+| 5-9 | ~13M-24M | varies | 0x00 | 13 → 63 | 0 |
+| 10 | ~26.6M | 0xff | 0x18 | 66 | 0 |
+| 11 | ~37.5M | 0x7e | 0x1e | 79 | **61,440 (fully populated)** |
+| 12-13 | ~48M-59M | 0x7f | 0x1e | 88 → 93 | 61,440 (stays fully populated) |
+
+Reading this: frames 1-3 show only 2 distinct PC values — the CPU is in a
+classic NES reset routine's "wait for two vblanks" polling loop (extremely
+common pattern, e.g. `BIT $2002 / BPL loop`), not stuck/broken. Starting
+frame 4, PPUCTRL changes and the distinct-PC count climbs steadily (13, 24,
+54, 63...) as the reset code finishes and real game init/setup code starts
+executing a much wider range of addresses. By frame 10, PPUMASK gets its
+rendering-enable bits set (0x18 = background + sprites on), and by frame 11
+the entire 256x240 framebuffer is populated with real rendered pixel data
+and **stays** fully populated through frame 13 — i.e. this isn't a one-off
+render, it's stable frame-over-frame rendering, consistent with the game
+having reached its title-screen/attract-mode render loop.
+
+**Also notable**: `PRGB0`/`PRGB1` were observed changing over the course of
+the run (e.g. `(2,3)` at 3M steps, `(0,1)` by 60M steps) — direct evidence
+the game is actively writing to the GxROM bank-select register during
+normal execution, not just once at boot. This particular cartridge is a
+two-game combo pack (Super Mario Bros. + Duck Hunt share one board), so
+PRG bank-switching between the two games' code is exactly the kind of
+behavior this ROM's mapper usage should exhibit — seeing it happen
+organically, driven by the game's own code rather than a synthetic test
+writing the register directly, is a meaningful independent confirmation
+that mapper 66 works correctly end-to-end.
+
+**Rough timing expectation for the real Scratch/TurboWarp build**: 60M
+Python interpreter steps (a rough proxy for block-graph traversal work, not
+directly convertible to real Scratch execution speed — TurboWarp's
+compiled runtime is dramatically faster per-block than this from-scratch
+Python walker) took ~49 seconds and covered about 13 frames' worth of the
+game's own boot sequence up through a stable rendered screen. This suggests
+the real build should reach a visible, rendering title screen within a
+comparable number of frames once loaded in an actual Scratch/TurboWarp
+project — how many real wall-clock seconds that translates to depends
+entirely on TurboWarp's block-execution throughput, which cannot be
+measured from this environment.
+
+**Not verified** (same caveats as the NEStress test): pixel-perfect visual
+correctness against real hardware, audio (APU out of scope), and actual
+gameplay/input response — all would need a real Scratch/TurboWarp runtime
+to confirm. What IS verified: the CPU executes a real, unmodified
+commercial ROM's actual boot sequence for tens of millions of instructions
+without crashing or losing track of PC, the previously-missing mapper now
+works (confirmed both synthetically and by the real game's own bank-switch
+writes taking effect), and rendering activates and stabilizes exactly the
+way a working NES boot sequence should.

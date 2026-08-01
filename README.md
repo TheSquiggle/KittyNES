@@ -3,11 +3,13 @@
 A full NES (Nintendo Entertainment System) emulator built as a real, loadable
 `.sb3` Scratch 3.0 project — pure block logic, no TurboWarp JS extension.
 
-**v1 status: all 8 planned phases done and verified**, plus a real-ROM smoke
-test against `NEStress.NES` (a well-known CPU/PPU/input test ROM) running
-50M+ interpreter steps across 7+ full frames with the framebuffer fully
-populated and NMI/vblank firing and being serviced correctly — see
-`docs/real_rom_testing.md`. Definitive artifact:
+**v1 status: all 8 planned phases done and verified**, plus real-ROM smoke
+tests against `NEStress.NES` (a well-known CPU/PPU/input test ROM — 50M+
+interpreter steps across 7+ full frames, framebuffer fully populated,
+NMI/vblank firing and serviced correctly) and a real user-owned copy of
+"Super Mario Bros. + Duck Hunt (USA)" (mapper 66/GxROM — 60M+ steps, stable
+fully-rendered framebuffer by frame 11, live in-game mapper bank-switching
+observed) — see `docs/real_rom_testing.md`. Definitive artifact:
 [`progress/nes_emulator.sb3`](progress/nes_emulator.sb3). To build a `.sb3`
 for a specific ROM: `python code/build_final.py path\to\game.nes`.
 
@@ -55,7 +57,7 @@ bug-by-bug. Summary:
 | 2 | Memory bus, PPU register plumbing ($2000-$2007), mapper dispatch scaffolding | DONE |
 | 3 | 6502 CPU core: all 151 official opcodes, 13 addressing modes, 7 flags, reset/NMI/IRQ | DONE, verified (36 checks) |
 | 4 | CPU correctness verification (hand-authored suite, real block graph) | DONE |
-| 5 | Mappers: NROM, UxROM, CNROM, MMC1 (5-write serial-shift protocol) | DONE, verified (mapper suite) |
+| 5 | Mappers: NROM, UxROM, CNROM, MMC1 (5-write serial-shift protocol), GxROM/66 | DONE, verified (mapper suite) |
 | 6a | PPU background rendering (pattern-table decode, attribute palettes, framebuffer, Pen flush) | DONE, verified (11 checks) |
 | 6b | Sprites (OAM, priority, sprite-0-hit, overflow) + loopy scroll registers (coarse) | DONE, verified (22 checks) |
 | 7 | iNES cartridge (`.nes`) loader | DONE, verified (22 checks) |
@@ -68,7 +70,7 @@ up in detail in `progress/PROGRESS_LOG.md` and the relevant `docs/*.md` file.
 
 **Structurally verified**, every phase, via `interp.py` walking the real
 generated block graph (not a re-derivation — the actual `.sb3` logic):
-full 6502 CPU, NROM/UxROM/CNROM/MMC1 mapper support, PPU background+sprite
+full 6502 CPU, NROM/UxROM/CNROM/MMC1/GxROM(66) mapper support, PPU background+sprite
 rendering with priority/sprite-0-hit and coarse (8px-granularity) scrolling,
 a real iNES header parser + loader, and a scanline-driven main loop with
 correct vblank/NMI timing.

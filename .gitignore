@@ -1,0 +1,5 @@
+# ROM-baked build artifacts containing copyrighted commercial ROM data --
+# local-only, never pushed. (Public-domain/freeware test-ROM builds like
+# nes_emulator_nestress.sb3 are fine to commit; anything baking in a
+# commercial game's actual PRG/CHR bytes is not.)
+progress/nes_emulator_smb_duckhunt.sb3

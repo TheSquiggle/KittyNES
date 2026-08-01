@@ -512,6 +512,49 @@ sound-register writes land as no-ops via the existing PPU/APU stub range,
 same as before this test, not a new issue). Full detail, including the
 input-wiring confirmation, in new `docs/real_rom_testing.md`.
 
+## 2026-08-01 — Mapper 66 (GxROM/MHROM) added for a real user ROM
+
+A user tried building with their own "Super Mario Bros. + Duck Hunt (USA)"
+ROM and got a permanent grey box. Header inspection found mapper 66
+(GxROM/MHROM, 64K PRG/16K CHR/vertical mirroring) — not one of the 4
+mappers implemented (0/1/2/3), so `mapper_write` silently no-op'd and PRG/
+CHR reads never returned real data.
+
+Added mapper 66 to `code/build_core.py`'s `mapper_write`: a single
+write-only register (any $8000-$FFFF address), bits 0-1 select a 32K PRG
+bank (the WHOLE window switches together, unlike UxROM's split/MMC1's
+fixed-bank schemes), bits 4-5 select an 8K CHR bank. Needed **no new bus
+state** — reuses `PRGB0`/`PRGB1`/`CHRB0`/`CHRB1` directly as consecutive
+bank pairs (same trick MMC1's 32K PRG mode already uses), since
+`mapper_read`/`ppu_read`/`chr_read` already read those generically.
+`ines_loader.py` gained a mapper-66-aware power-on default (bank 0 for
+both PRG/CHR, no fixed-last-bank concept to default against). Full writeup
+in `docs/mapper_specs.md`.
+
+Verified with 16 new checks in `code/test_mappers.py`: initial state,
+combined PRG+CHR bank-select write reflected in both `bus_read`/`ppu_read`,
+explicit confirmation the *whole* window moves together, and that a write
+via a non-`$8000` address still works. All pass; full existing suite
+(150+ checks) reran clean, no regressions.
+
+Rebuilt the user's actual ROM: `python code/build_final.py "...Super Mario
+Bros. + Duck Hunt (USA).nes" progress/nes_emulator_smb_duckhunt.sb3` —
+`validate_sb3.py` clean, header parse confirms mapper 66/mirror 1/4x16K
+PRG/2x8K CHR exactly matching the original diagnosis.
+
+Ran a new `code/run_smb_smoke.py` (adapted from the NEStress smoke test)
+for 60M interp steps (~49s): the CPU visibly progresses through a real
+reset-then-boot sequence (distinct-PC count climbs from 2, in a classic
+"wait for vblank" poll loop, up to 93 as init code runs), PPUMASK's
+rendering-enable bits get set by frame 10, and the framebuffer becomes
+**fully populated and stays that way** from frame 11 through frame 13 —
+consistent with reaching a stable rendered title screen. Also observed
+`PRGB0`/`PRGB1` changing live during execution, direct evidence the game
+itself is actively using the GxROM bank-select register (this cartridge is
+a two-game combo pack, so PRG bank-switching between SMB and Duck Hunt is
+expected), not just a synthetic test writing it. Full detail, including a
+frame-by-frame table, in `docs/real_rom_testing.md`.
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*
