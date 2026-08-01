@@ -42,11 +42,18 @@ TEST_FREQS = [110, 440, 880, 2000, 4000]  # spans the NES pulse-channel range
 
 
 def generate_click_train_wav(freq_hz, sample_rate=SAMPLE_RATE, click_ms=CLICK_MS,
-                              carrier_hz=CLICK_CARRIER_HZ, amplitude=AMPLITUDE):
+                              carrier_hz=CLICK_CARRIER_HZ, amplitude=AMPLITUDE,
+                              click_fraction=0.40):
     """Return (wav_bytes, total_samples, click_samples, period_seconds) for one
     "note": a short decaying-sine click/pop at the start, padded with silence
     so the TOTAL asset length is exactly 1/freq_hz seconds (rounded to the
-    nearest whole sample -- see research doc for the precision implication)."""
+    nearest whole sample -- see research doc for the precision implication).
+
+    click_fraction: the click is capped at this fraction of the period (see
+    the reasoning below) -- defaults to 0.40 (v1's value); v3 raises this to
+    0.65 to test whether a fuller-sounding click at the cost of less silence
+    margin addresses the "higher pitches sound thin" v1 listening-test
+    feedback."""
     total_samples = max(1, round(sample_rate / freq_hz))
     click_samples_wanted = max(1, round(sample_rate * click_ms / 1000.0))
     # Clamp so the click never eats the whole period. Naively clamping to
@@ -55,13 +62,13 @@ def generate_click_train_wav(freq_hz, sample_rate=SAMPLE_RATE, click_ms=CLICK_MS
     # 3ms click is already longer than a whole period above ~330Hz (period
     # < 3ms), so a "just barely fits" clamp would leave essentially no
     # silence gap for most of the test range, not just the very top of it.
-    # Instead cap the click at 40% of the period, guaranteeing at least 60%
-    # silence at every frequency tested -- this makes the click-vs-silence
-    # structure comparable across all 5 test notes, at the cost of the click
-    # itself getting proportionally shorter (and therefore quieter/less
-    # "poppy") as frequency rises. See the research doc's "click duration
-    # vs. period" open question for what this implies for a real APU.
-    click_samples = min(click_samples_wanted, max(1, int(total_samples * 0.4)))
+    # Instead cap the click at `click_fraction` of the period -- this makes
+    # the click-vs-silence structure comparable across all test notes, at
+    # the cost of the click itself getting proportionally shorter (and
+    # therefore quieter/less "poppy") as frequency rises. See the research
+    # doc's "click duration vs. period" open question for what this implies
+    # for a real APU.
+    click_samples = min(click_samples_wanted, max(1, int(total_samples * click_fraction)))
 
     samples = [0] * total_samples
     for i in range(click_samples):

@@ -94,6 +94,12 @@ def declare_state(e):
         for bitpos in range(8):
             PIXBIT[byte * 8 + bitpos] = (byte >> (7 - bitpos)) & 1
     e.lst("PIXBIT_T", PIXBIT)
+    # per-scanline tile-plane row buffers for fine-X scrolling: 33 tiles
+    # (32 visible + 1 lookahead for when fine-X shifts pixels in from the
+    # next tile), 1-indexed like every other list here.
+    e.lst("ROWP0", [0] * 33)
+    e.lst("ROWP1", [0] * 33)
+    e.lst("ROWPAL", [0] * 33)
 
 
 def phase2_bus(e):
@@ -985,32 +991,58 @@ def phase6b_sprites(e):
     s.finalize()
 
     # ---- render_bg_line_scrolled sl: renders one on-screen scanline using
-    # the current P_V (coarse X/Y + nametable select + fine Y), incrementing
-    # coarse X after each of the 32 tiles and coarse/fine Y once at the end
-    # (matching the real PPU's per-tile/per-scanline increment timing). ----
+    # the current P_V (coarse X/Y + nametable select + fine Y) AND P_X (fine
+    # X, 0-7) for true per-pixel horizontal scrolling -- not just coarse
+    # 8px-granularity tile selection. Two passes, mirroring real hardware's
+    # background shift-register concept at tile granularity instead of
+    # per-dot: (1) fetch 33 tiles' worth of bitplane data into the ROWP0/
+    # ROWP1/ROWPAL row buffers (32 visible tiles + 1 lookahead tile, needed
+    # because a nonzero fine-X shifts up to 7 pixels in from the NEXT tile
+    # at the right edge of the screen), incrementing coarse X after each
+    # fetch; (2) walk all 256 screen pixels, each sampling bit position
+    # `(x mod 8) + P_X` -- if that's < 8 it's within the tile at `x div 8`,
+    # otherwise it's within the LOOKAHEAD tile at `x div 8 + 1`, at bit
+    # position `(x mod 8) + P_X - 8`. Coarse/fine Y increments once at the
+    # end, same as before. ----
     s = e.defproc("render_bg_line_scrolled", ["sl"])
     e.call(s, "bg_update_patbase")
     e.call(s, "ppu_copy_horiz_v")
     e.setv(s, "SC_FINEY", e.IDIV(e.V("P_V"), 4096))
+
+    # ---- pass 1: fetch 33 tiles of plane data into the row buffers ----
     e.setv(s, "SC_TILECOL", 0)
-    with e.UNTIL(s, e.EQ(e.V("SC_TILECOL"), 32)) as body:
+    with e.UNTIL(s, e.EQ(e.V("SC_TILECOL"), 33)) as body:
         e.call(body, "bg_setup_tile_v")
         e.call(body, "ppu_read", a=e.ADD(e.V("BG_PATBASE"),
                                           e.ADD(e.MUL(e.V("BGTILE"), 16), e.V("SC_FINEY"))))
-        e.setv(body, "BGP0", e.V("RESULT"))
+        e.repl(body, "ROWP0", e.ADD(e.V("SC_TILECOL"), 1), e.V("RESULT"))
         e.call(body, "ppu_read", a=e.ADD(e.V("BG_PATBASE"),
                                           e.ADD(e.MUL(e.V("BGTILE"), 16), e.ADD(e.V("SC_FINEY"), 8))))
-        e.setv(body, "BGP1", e.V("RESULT"))
-        e.setv(body, "RB_PX", 0)
-        with e.UNTIL(body, e.EQ(e.V("RB_PX"), 8)) as pxloop:
-            e.call(pxloop, "bg_pixel_val", px=e.V("RB_PX"))
-            fb_idx = e.ADD(e.MUL(e.ARG("sl"), 256),
-                           e.ADD(e.ADD(e.MUL(e.V("SC_TILECOL"), 8), e.V("RB_PX")), 1))
-            e.repl(pxloop, "FB", fb_idx, e.V("RESULT"))
-            e.repl(pxloop, "BGOP", fb_idx, e.V("BGCOL"))
-            e.chg(pxloop, "RB_PX", 1)
+        e.repl(body, "ROWP1", e.ADD(e.V("SC_TILECOL"), 1), e.V("RESULT"))
+        e.repl(body, "ROWPAL", e.ADD(e.V("SC_TILECOL"), 1), e.V("BGPALSEL"))
         e.call(body, "ppu_scanline_inc_coarse_x")
         e.chg(body, "SC_TILECOL", 1)
+
+    # ---- pass 2: composite all 256 screen pixels with fine-X applied ----
+    e.setv(s, "RB_PX", 0)
+    with e.UNTIL(s, e.EQ(e.V("RB_PX"), 256)) as body:
+        e.setv(body, "SC_T1", e.ADD(e.MOD(e.V("RB_PX"), 8), e.V("P_X")))  # shifted bit pos
+        ctx = e.IFELSE(body, e.LT(e.V("SC_T1"), 8))
+        with ctx as b:
+            e.setv(b, "SC_T2", e.ADD(e.IDIV(e.V("RB_PX"), 8), 1))  # tile index (1-indexed)
+            e.setv(b, "SC_T3", e.V("SC_T1"))                       # bit within that tile
+        with ctx.substack2() as b:
+            e.setv(b, "SC_T2", e.ADD(e.ADD(e.IDIV(e.V("RB_PX"), 8), 1), 1))  # lookahead tile
+            e.setv(b, "SC_T3", e.SUB(e.V("SC_T1"), 8))
+        e.setv(body, "BGP0", e.IT("ROWP0", e.V("SC_T2")))
+        e.setv(body, "BGP1", e.IT("ROWP1", e.V("SC_T2")))
+        e.setv(body, "BGPALSEL", e.IT("ROWPAL", e.V("SC_T2")))
+        e.call(body, "bg_pixel_val", px=e.V("SC_T3"))
+        fb_idx = e.ADD(e.MUL(e.ARG("sl"), 256), e.ADD(e.V("RB_PX"), 1))
+        e.repl(body, "FB", fb_idx, e.V("RESULT"))
+        e.repl(body, "BGOP", fb_idx, e.V("BGCOL"))
+        e.chg(body, "RB_PX", 1)
+
     e.call(s, "ppu_scanline_inc_y")
     s.finalize()
 

@@ -59,12 +59,18 @@ bug-by-bug. Summary:
 | 4 | CPU correctness verification (hand-authored suite, real block graph) | DONE |
 | 5 | Mappers: NROM, UxROM, CNROM, MMC1 (5-write serial-shift protocol), GxROM/66 | DONE, verified (mapper suite) |
 | 6a | PPU background rendering (pattern-table decode, attribute palettes, framebuffer, Pen flush) | DONE, verified (11 checks) |
-| 6b | Sprites (OAM, priority, sprite-0-hit, overflow) + loopy scroll registers (coarse) | DONE, verified (22 checks) |
+| 6b | Sprites (OAM, priority, sprite-0-hit, overflow) + loopy scroll registers, **including fine-X sub-tile scrolling** | DONE, verified (25+22 checks across 2 files) |
 | 7 | iNES cartridge (`.nes`) loader | DONE, verified (22 checks) |
 | 8 | Main loop: scanline-granularity CPU/PPU timing, vblank/NMI, Pen flush | DONE, verified (15 checks) |
+| 9 (audio) | APU — NOT built yet. A "click-train" pitch approximation technique is being prototyped/iterated (v1→v2→v3) in `progress/audio_prototype*.sb3`, standalone and unintegrated, pending human listening-test confirmation | PROTOTYPE, unverified |
 
 Every phase's generator code, design rationale, and test results are written
 up in detail in `progress/PROGRESS_LOG.md` and the relevant `docs/*.md` file.
+Real-ROM sprite garbling reported against a real game (SMB+Duck Hunt) was
+traced to the coarse-only scrolling gap and fixed — fine-X pixel scrolling
+is now implemented; see `progress/PROGRESS_LOG.md` for the full
+investigation (dedicated bug-hunt tests for 8x16 mode/flip/priority/OAM DMA
+all passed clean beforehand).
 
 ## What v1 is and isn't
 

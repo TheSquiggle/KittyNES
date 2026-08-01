@@ -595,6 +595,101 @@ writes, envelope/sweep/length-counter approximation) is gated on this
 prototype getting confirmed to actually sound right — do not build on top
 of this technique until that feedback comes back.**
 
+## 2026-08-01 — Sprite bug hunt (real-ROM report) + fine-X scrolling fix
+
+User reported sprites "screwed up" in the SMB+Duck Hunt real-ROM build —
+the first time sprite rendering has been checked against a real game
+rather than synthetic tests. Investigated `phase6b_sprites` for the
+specific candidates flagged as likely culprits: 8x16 sprite mode
+addressing (pattern-table-from-tile-bit0, tile-pair top/bottom split),
+horizontal/vertical flip (independently and combined), the priority bit,
+sprite-0-hit, OAM DMA ($4014, including destination-address wraparound
+when OAMADDR != 0), and the Y-minus-1 hardware quirk.
+
+Wrote `code/test_ppu_sprites2.py`: 21 targeted checks isolating each of
+these. **All passed cleanly on the first run (after fixing one bug in the
+test itself — an uninitialized palette entry, not an emulator bug) — no
+correctness bugs found in any of the specifically-flagged areas.** Also
+confirmed empirically, by running the real ROM and dumping live OAM state,
+that SMB does use 8x16 sprite mode (PPUCTRL read back as `0x70`, bit 5
+set) at least on some screens, validating that this was a real, relevant
+thing to check (not a moot point because the ROM never uses it) — and the
+dumped sprite data (Y/tile/attr/X for 8 sprites at frame 60) looked like a
+coherent, non-corrupted arrangement, not obviously garbled.
+
+**Most likely actual explanation, and the fix applied:** SMB is a
+side-scrolling platformer, and the background renderer only supported
+*coarse* (8-pixel-granularity) scrolling — a documented Phase 6b
+limitation (fine-X sub-tile pixel shift was explicitly listed as "not yet
+implemented"). Sprites are drawn at their true absolute per-pixel OAM X/Y
+and were never affected by that gap. During horizontal scrolling, a
+background snapping in 8px jumps against smoothly-moving sprites (Mario,
+enemies) would visually read as "sprites are wrong/misaligned" to an
+observer, even though the sprite math itself tested clean.
+
+**Implemented fine-X pixel scrolling** in `render_bg_line_scrolled`
+(`build_core.py`): restructured from a single-pass "fetch tile, render its
+8 pixels, advance" loop into two passes — (1) fetch 33 tiles' worth of
+bitplane data (32 visible + 1 lookahead) into new `ROWP0`/`ROWP1`/`ROWPAL`
+row-buffer lists, incrementing coarse X after each; (2) walk all 256
+screen pixels, each sampling bit position `(x mod 8) + P_X` — within the
+current tile if that's `< 8`, otherwise within the lookahead tile at
+`bit - 8`. This is the same "shift register" concept real hardware uses,
+just at tile granularity instead of per-dot. Added 4 new checks to
+`test_ppu_sprites2.py` confirming the shift actually happens correctly at
+`P_X = 0, 3, 7`.
+
+**Result: all 25 checks in the new test file pass, and the full existing
+suite (200+ checks across every prior phase) reran clean — no
+regressions.** Rebuilt `progress/nes_emulator_wip_phase3_full.sb3`
+(2,941 blocks) and, locally only (not committed — copyrighted ROM data,
+same policy as before), `progress/nes_emulator_smb_duckhunt.sb3`, for the
+user to re-test in TurboWarp.
+
+**Honest caveat:** the fine-X fix is the strongest available hypothesis
+given (a) it directly explains the reported symptom for a scrolling game,
+(b) it was already a known, documented gap, and (c) targeted tests for
+every other specifically-flagged sprite mechanism came back clean — but it
+has NOT been confirmed against the actual visual report, since that still
+requires the user to look at the real TurboWarp build. If sprites still
+look wrong after this fix, the next things to check would be: whether the
+"screwed up" symptom was on a non-scrolling screen (which would rule this
+fix out and point back toward something not yet found), or a closer
+comparison against real NES footage of the exact same game moment.
+
+## 2026-08-01 — Audio prototype v2/v3: warp-mode fix + click-length tradeoff (STILL UNVERIFIED)
+
+v1 human listening test reported two issues: (1) "gap between pops is too
+large," (2) "higher pitches sound thin." Both addressed with new prototype
+variants, still unverified pending a second listening test.
+
+**Gap hypothesis**: almost certainly Scratch's `forever` C-block yielding
+once per iteration at the ~16ms screen-refresh boundary — even in
+TurboWarp, unless the loop runs inside a `warp: true` custom block. At
+2000-4000Hz the note's own period is only 0.25-0.5ms, so a 16ms
+per-iteration tax would completely dominate and sound like exactly what
+was reported, at every frequency (consistent with the report not being
+limited to just the high notes). **Fix (`code/audio_prototype_v2.py` ->
+`progress/audio_prototype_v2.sb3`)**: moved the loop body into a
+`warp: true` procedure (`play_notes_forever`) instead of a raw top-level
+`forever`. v2 uses the same 40%-click-fraction WAV assets as v1 so a
+listening comparison isolates just this fix.
+
+**"Thin at high pitches" hypothesis**: v1's click length was capped at 40%
+of the period for silence-margin safety, leaving only 4 samples of actual
+click at 4000Hz. **Fix (v3, same script, `progress/audio_prototype_v3.sb3`)**:
+raised the cap to 65% of the period (7 samples at 4000Hz, up to 65 at
+440Hz), on top of the v2 warp fix — a genuine tradeoff (less silence
+margin) not a strict improvement, which is exactly why it needs a listen.
+
+`generate_click_train_wav` in `code/audio_prototype.py` gained a
+`click_fraction` parameter (was hardcoded to 0.40) to support this.
+Structural validation clean on both new files. Full writeup, the specific
+gap-hypothesis reasoning, the new click-length table, and exactly what to
+compare across v1/v2/v3 in `research/audio_click_train_approach.md`.
+**Still not integrated into the main build; still no claim that any
+variant "works" — needs a second human listening test.**
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*
