@@ -202,5 +202,62 @@ check("MMC1 bit7-reset: CTRL bits2-3 forced to 11",
 mmc1_write_serial(interp, 0xE000, 9)
 check("MMC1 post-reset PRG-select bank9: PRGB0", i_(interp.vars["PRGB0"]), 9)
 
+
+# =====================================================================
+# GxROM/MHROM (mapper 66): single register, whole-window bank switching.
+# Bits 0-1 select a 32K PRG bank (the ENTIRE $8000-$FFFF window switches
+# together -- no fixed-last-bank behavior like UxROM/MMC1), bits 4-5 select
+# an 8K CHR bank. This is exactly the mapper on "Super Mario Bros. + Duck
+# Hunt (USA).nes" (64K PRG = 4x 16K banks = 2x 32K GxROM banks, 16K CHR =
+# 2x 8K banks), which is what prompted adding mapper 66 support at all.
+# =====================================================================
+print("\n--- GxROM/MHROM (mapper 66) ---")
+interp = fresh_interp()
+NPRG32 = 2  # 64K PRG = 2x 32K banks (4x 16K banks internally)
+PRG = [0] * (16384 * NPRG32 * 2)
+for bank16 in range(NPRG32 * 2):
+    for i in range(16384):
+        PRG[bank16 * 16384 + i] = bank16
+interp.lists["PRG"] = PRG
+NCHR8 = 2  # 16K CHR = 2x 8K banks (4x 4K banks internally)
+CHR = [0] * (4096 * NCHR8 * 2)
+for bank4 in range(NCHR8 * 2):
+    for i in range(4096):
+        CHR[bank4 * 4096 + i] = bank4
+interp.lists["CHR"] = CHR
+interp.vars["MAPPER"] = 66
+interp.vars["PRGBANKS"] = NPRG32 * 2  # bus code counts PRGBANKS in 16K units
+interp.vars["CHRBANKS"] = NCHR8       # CHRBANKS is in 8K units (matches CNROM's convention)
+interp.vars["CHRRAM"] = 0
+interp.vars["PRGB0"] = 0
+interp.vars["PRGB1"] = 1
+interp.vars["CHRB0"] = 0
+interp.vars["CHRB1"] = 1
+
+check("GxROM initial: bus_read $8000 (bank0)", bus_read(interp, 0x8000), 0)
+check("GxROM initial: bus_read $C000 (still bank0's 2nd 16K half)", bus_read(interp, 0xC000), 1)
+check("GxROM initial: ppu_read $0000 (CHR bank0)", ppu_read(interp, 0x0000), 0)
+check("GxROM initial: ppu_read $1000 (CHR bank1)", ppu_read(interp, 0x1000), 1)
+
+# select PRG bank 1 (32K bank -> 16K banks 2,3), CHR bank 1 (8K -> 4K banks 2,3):
+# register value = PRG_bits(0-1)=1, CHR_bits(4-5)=1 -> 0b00010001 = 0x11
+bus_write(interp, 0x8000, 0x11)
+check("GxROM after select: PRGB0", i_(interp.vars["PRGB0"]), 2)
+check("GxROM after select: PRGB1", i_(interp.vars["PRGB1"]), 3)
+check("GxROM after select: bus_read $8000 (bank1's 1st 16K half)", bus_read(interp, 0x8000), 2)
+check("GxROM after select: bus_read $C000 (bank1's 2nd 16K half)", bus_read(interp, 0xC000), 3)
+check("GxROM after select: whole window switched together (no fixed-last-bank)",
+      bus_read(interp, 0xFFFF), 3)
+check("GxROM after select: CHRB0", i_(interp.vars["CHRB0"]), 2)
+check("GxROM after select: CHRB1", i_(interp.vars["CHRB1"]), 3)
+check("GxROM after select: ppu_read $0000 (CHR bank1's 1st 4K half)", ppu_read(interp, 0x0000), 2)
+check("GxROM after select: ppu_read $1000 (CHR bank1's 2nd 4K half)", ppu_read(interp, 0x1000), 3)
+
+# a write to ANY address in $8000-$FFFF (not just $8000) takes effect --
+# hardware doesn't care about the exact address in that range
+bus_write(interp, 0xFFF0, 0x00)  # back to bank 0 for both PRG and CHR
+check("GxROM: write via a different address ($FFF0) still works", i_(interp.vars["PRGB0"]), 0)
+check("GxROM: write via a different address also updates CHR", i_(interp.vars["CHRB0"]), 0)
+
 print("\n%s" % ("ALL MAPPER CHECKS PASSED" if not FAILURES else "FAILURES: %r" % FAILURES))
 sys.exit(1 if FAILURES else 0)

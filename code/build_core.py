@@ -265,6 +265,21 @@ def phase2_bus(e):
                                         e.ADD(e.V("CHRBANKS"), e.EQ(e.V("CHRBANKS"), 0))), 2))
             e.setv(c, "CHRB0", e.V("U1"))
             e.setv(c, "CHRB1", e.ADD(e.V("U1"), 1))
+        # GxROM/MHROM (66): one register, whole-window bank switching --
+        # bits 0-1 select a 32K PRG bank (the ENTIRE $8000-$FFFF window
+        # switches together, unlike UxROM/MMC1's fixed-last-bank scheme),
+        # bits 4-5 select an 8K CHR bank. Reuses the existing PRGB0/PRGB1
+        # (16K windows) / CHRB0/CHRB1 (4K windows) bus variables directly --
+        # no new state needed, since a 32K PRG bank is just two consecutive
+        # 16K banks and an 8K CHR bank is two consecutive 4K banks (the same
+        # trick MMC1's 32K PRG mode already uses in mmc1_apply).
+        with e.IF(b, e.EQ(e.V("MAPPER"), 66)) as c:
+            e.setv(c, "U1", e.MOD(e.ARG("v"), 4))              # PRG bank (bits 0-1)
+            e.setv(c, "PRGB0", e.MUL(e.V("U1"), 2))
+            e.setv(c, "PRGB1", e.ADD(e.V("PRGB0"), 1))
+            e.setv(c, "U2", e.MOD(e.IDIV(e.ARG("v"), 16), 4))  # CHR bank (bits 4-5)
+            e.setv(c, "CHRB0", e.MUL(e.V("U2"), 2))
+            e.setv(c, "CHRB1", e.ADD(e.V("CHRB0"), 1))
         # MMC1 (1)
         with e.IF(b, e.EQ(e.V("MAPPER"), 1)) as c:
             cc = e.IFELSE(c, e.EQ(e.BIT7(e.ARG("v")), 1))

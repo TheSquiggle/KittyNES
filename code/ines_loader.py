@@ -162,9 +162,22 @@ def load_rom_into_emu(e, nes_bytes):
     e.proj.stage.variables[e.var("PRGBANKS")][1] = prg_banks_16k
     e.proj.stage.variables[e.var("CHRBANKS")][1] = chr_banks_8k
     e.proj.stage.variables[e.var("CHRRAM")][1] = chr_ram_flag
-    e.proj.stage.variables[e.var("PRGB0")][1] = 0
-    e.proj.stage.variables[e.var("PRGB1")][1] = prg_banks_16k - 1
-    e.proj.stage.variables[e.var("CHRB0")][1] = 0
-    e.proj.stage.variables[e.var("CHRB1")][1] = 1 if chr_banks_8k * 2 > 1 else 0
+    if parsed["mapper"] == 66:
+        # GxROM/MHROM: the PRG/CHR windows switch as whole 32K/8K units (one
+        # register controls both), so there's no "fixed last bank" the way
+        # UxROM/CNROM/MMC1's power-on defaults below assume -- default to
+        # register value 0 (bank 0 selected for both PRG and CHR), matching
+        # real hardware's typical power-on register state and what the
+        # cartridge's own reset code will immediately overwrite via its
+        # first $8000-$FFFF write anyway.
+        e.proj.stage.variables[e.var("PRGB0")][1] = 0
+        e.proj.stage.variables[e.var("PRGB1")][1] = 1
+        e.proj.stage.variables[e.var("CHRB0")][1] = 0
+        e.proj.stage.variables[e.var("CHRB1")][1] = 1 if chr_banks_8k * 2 > 1 else 0
+    else:
+        e.proj.stage.variables[e.var("PRGB0")][1] = 0
+        e.proj.stage.variables[e.var("PRGB1")][1] = prg_banks_16k - 1
+        e.proj.stage.variables[e.var("CHRB0")][1] = 0
+        e.proj.stage.variables[e.var("CHRB1")][1] = 1 if chr_banks_8k * 2 > 1 else 0
 
     return parsed
