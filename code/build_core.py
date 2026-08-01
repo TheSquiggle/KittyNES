@@ -48,6 +48,7 @@ def declare_state(e):
     for v in ["A", "X", "Y", "SP", "PC", "FC", "FZ", "FI", "FD", "FB", "FV", "FN",
               "RESULT", "EFF", "VAL", "PAGEX", "OPC", "MODE", "OPID", "CYCLES",
               "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9",
+              "U1", "U2", "U3", "U4", "U5", "U6", "U7", "U8", "U9",
               "MAPPER", "PRGBANKS", "CHRBANKS", "MIRROR", "CHRRAM",
               "PRGB0", "PRGB1", "CHRB0", "CHRB1",
               "M1_SR", "M1_CNT", "M1_CTRL", "M1_CHR0", "M1_CHR1", "M1_PRG",
@@ -81,82 +82,84 @@ def phase2_bus(e):
     # 4K bank select
     ctx = e.IFELSE(s, e.LT(a(), 4096))
     with ctx as b:
-        e.setv(b, "T1", e.ADD(e.MUL(e.V("CHRB0"), 4096), a()))
+        e.setv(b, "U1", e.ADD(e.MUL(e.V("CHRB0"), 4096), a()))
     with ctx.substack2() as b:
-        e.setv(b, "T1", e.ADD(e.MUL(e.V("CHRB1"), 4096), e.SUB(a(), 4096)))
-    e.setv(s, "RESULT", e.IT("CHR", e.ADD(e.MOD(e.V("T1"), e.LEN("CHR")), 1)))
+        e.setv(b, "U1", e.ADD(e.MUL(e.V("CHRB1"), 4096), e.SUB(a(), 4096)))
+    e.setv(s, "RESULT", e.IT("CHR", e.ADD(e.MOD(e.V("U1"), e.LEN("CHR")), 1)))
     s.finalize()
 
     s = e.defproc("chr_write", ["a", "v"])
     with e.IF(s, e.EQ(e.V("CHRRAM"), 1)) as b:
         ctx = e.IFELSE(b, e.LT(e.ARG("a"), 4096))
         with ctx as c:
-            e.setv(c, "T1", e.ADD(e.MUL(e.V("CHRB0"), 4096), e.ARG("a")))
+            e.setv(c, "U1", e.ADD(e.MUL(e.V("CHRB0"), 4096), e.ARG("a")))
         with ctx.substack2() as c:
-            e.setv(c, "T1", e.ADD(e.MUL(e.V("CHRB1"), 4096), e.SUB(e.ARG("a"), 4096)))
-        e.repl(b, "CHR", e.ADD(e.MOD(e.V("T1"), e.LEN("CHR")), 1), e.ARG("v"))
+            e.setv(c, "U1", e.ADD(e.MUL(e.V("CHRB1"), 4096), e.SUB(e.ARG("a"), 4096)))
+        e.repl(b, "CHR", e.ADD(e.MOD(e.V("U1"), e.LEN("CHR")), 1), e.ARG("v"))
     s.finalize()
 
     # ---------------- nametable index --------------------------------
     # nt_index a(0x2000-0x2FFF) -> RESULT = index into VRAM (0..2047)
     s = e.defproc("nt_index", ["a"])
-    e.setv(s, "T1", e.MOD(e.ARG("a"), 4096))          # 0..4095
-    e.setv(s, "T2", e.IDIV(e.V("T1"), 1024))          # table 0..3
-    e.setv(s, "T3", e.MOD(e.V("T1"), 1024))           # offset
+    e.setv(s, "U1", e.MOD(e.ARG("a"), 4096))          # 0..4095
+    e.setv(s, "U2", e.IDIV(e.V("U1"), 1024))          # table 0..3
+    e.setv(s, "U3", e.MOD(e.V("U1"), 1024))           # offset
     ctx = e.IFELSE(s, e.EQ(e.V("MIRROR"), 0))         # horizontal
     with ctx as b:
-        e.setv(b, "T4", e.IDIV(e.V("T2"), 2))
+        e.setv(b, "U4", e.IDIV(e.V("U2"), 2))
     with ctx.substack2() as b:
         c2 = e.IFELSE(b, e.EQ(e.V("MIRROR"), 1))      # vertical
         with c2 as c:
-            e.setv(c, "T4", e.MOD(e.V("T2"), 2))
+            e.setv(c, "U4", e.MOD(e.V("U2"), 2))
         with c2.substack2() as c:
             c3 = e.IFELSE(c, e.EQ(e.V("MIRROR"), 2))  # single-screen A
             with c3 as d:
-                e.setv(d, "T4", 0)
+                e.setv(d, "U4", 0)
             with c3.substack2() as d:
                 c4 = e.IFELSE(d, e.EQ(e.V("MIRROR"), 3))  # single-screen B
                 with c4 as f:
-                    e.setv(f, "T4", 1)
+                    e.setv(f, "U4", 1)
                 with c4.substack2() as f:              # four-screen (2KB only)
-                    e.setv(f, "T4", e.MOD(e.V("T2"), 2))
-    e.setv(s, "RESULT", e.ADD(e.MUL(e.V("T4"), 1024), e.V("T3")))
+                    e.setv(f, "U4", e.MOD(e.V("U2"), 2))
+    e.setv(s, "RESULT", e.ADD(e.MUL(e.V("U4"), 1024), e.V("U3")))
     s.finalize()
 
     # ---------------- ppu_read / ppu_write ---------------------------
     s = e.defproc("ppu_read", ["a"])
-    e.setv(s, "T9", e.MOD(e.ARG("a"), 16384))
-    ctx = e.IFELSE(s, e.LT(e.V("T9"), 8192))
+    e.setv(s, "U9", e.MOD(e.ARG("a"), 16384))
+    ctx = e.IFELSE(s, e.LT(e.V("U9"), 8192))
     with ctx as b:
-        e.call(b, "chr_read", a=e.V("T9"))
+        e.call(b, "chr_read", a=e.V("U9"))
     with ctx.substack2() as b:
-        c2 = e.IFELSE(b, e.LT(e.V("T9"), 16128))       # < 0x3F00 -> nametables
+        c2 = e.IFELSE(b, e.LT(e.V("U9"), 16128))       # < 0x3F00 -> nametables
         with c2 as c:
-            e.call(c, "nt_index", a=e.V("T9"))
+            e.call(c, "nt_index", a=e.V("U9"))
             e.setv(c, "RESULT", e.IT("VRAM", e.ADD(e.V("RESULT"), 1)))
         with c2.substack2() as c:
-            e.setv(c, "T8", e.MOD(e.V("T9"), 32))
-            with e.IF(c, e.AND(e.EQ(e.MOD(e.V("T8"), 4), 0), e.GT(e.V("T8"), 15))) as d:
-                e.setv(d, "T8", e.SUB(e.V("T8"), 16))
-            e.setv(c, "RESULT", e.IT("PAL", e.ADD(e.V("T8"), 1)))
+            e.setv(c, "U8", e.MOD(e.V("U9"), 32))
+            with e.IF(c, e.AND(e.EQ(e.MOD(e.V("U8"), 4), 0), e.GT(e.V("U8"), 15))) as d:
+                e.setv(d, "U8", e.SUB(e.V("U8"), 16))
+            e.setv(c, "RESULT", e.IT("PAL", e.ADD(e.V("U8"), 1)))
     s.finalize()
 
     s = e.defproc("ppu_write", ["a", "v"])
-    e.setv(s, "T9", e.MOD(e.ARG("a"), 16384))
-    ctx = e.IFELSE(s, e.LT(e.V("T9"), 8192))
+    e.setv(s, "U9", e.MOD(e.ARG("a"), 16384))
+    ctx = e.IFELSE(s, e.LT(e.V("U9"), 8192))
     with ctx as b:
-        e.call(b, "chr_write", a=e.V("T9"), v=e.ARG("v"))
+        e.call(b, "chr_write", a=e.V("U9"), v=e.ARG("v"))
     with ctx.substack2() as b:
-        c2 = e.IFELSE(b, e.LT(e.V("T9"), 16128))
+        c2 = e.IFELSE(b, e.LT(e.V("U9"), 16128))
         with c2 as c:
-            e.call(c, "nt_index", a=e.V("T9"))
+            e.call(c, "nt_index", a=e.V("U9"))
             e.repl(c, "VRAM", e.ADD(e.V("RESULT"), 1), e.ARG("v"))
         with c2.substack2() as c:
-            e.setv(c, "T8", e.MOD(e.V("T9"), 32))
-            with e.IF(c, e.AND(e.EQ(e.MOD(e.V("T8"), 4), 0), e.GT(e.V("T8"), 15))) as d:
-                e.setv(d, "T8", e.SUB(e.V("T8"), 16))
-            e.repl(c, "PAL", e.ADD(e.V("T8"), 1), e.MOD(e.ARG("v"), 64))
+            e.setv(c, "U8", e.MOD(e.V("U9"), 32))
+            with e.IF(c, e.AND(e.EQ(e.MOD(e.V("U8"), 4), 0), e.GT(e.V("U8"), 15))) as d:
+                e.setv(d, "U8", e.SUB(e.V("U8"), 16))
+            e.repl(c, "PAL", e.ADD(e.V("U8"), 1), e.MOD(e.ARG("v"), 64))
     s.finalize()
+
+    e.lst("PRGRAM", [0] * 8192)
 
     # ---------------- mapper_read ------------------------------------
     # PRG banking is expressed via PRGB0 (16K bank at $8000) and PRGB1 ($C000)
@@ -171,34 +174,32 @@ def phase2_bus(e):
     with ctx.substack2() as b:
         c2 = e.IFELSE(b, e.LT(e.ARG("a"), 49152))
         with c2 as c:
-            e.setv(c, "T1", e.ADD(e.MUL(e.V("PRGB0"), 16384), e.SUB(e.ARG("a"), 32768)))
+            e.setv(c, "U1", e.ADD(e.MUL(e.V("PRGB0"), 16384), e.SUB(e.ARG("a"), 32768)))
         with c2.substack2() as c:
-            e.setv(c, "T1", e.ADD(e.MUL(e.V("PRGB1"), 16384), e.SUB(e.ARG("a"), 49152)))
-        e.setv(b, "RESULT", e.IT("PRG", e.ADD(e.MOD(e.V("T1"), e.LEN("PRG")), 1)))
+            e.setv(c, "U1", e.ADD(e.MUL(e.V("PRGB1"), 16384), e.SUB(e.ARG("a"), 49152)))
+        e.setv(b, "RESULT", e.IT("PRG", e.ADD(e.MOD(e.V("U1"), e.LEN("PRG")), 1)))
     s.finalize()
-
-    e.lst("PRGRAM", [0] * 8192)
 
     # ---------------- mapper bank recompute ---------------------------
     s = e.defproc("mmc1_apply", [])
     # PRG mode = bits 2-3 of control
-    e.setv(s, "T1", e.MOD(e.IDIV(e.V("M1_CTRL"), 4), 4))
-    e.setv(s, "T2", e.MOD(e.V("M1_PRG"), 16))
-    ctx = e.IFELSE(s, e.LT(e.V("T1"), 2))
+    e.setv(s, "U1", e.MOD(e.IDIV(e.V("M1_CTRL"), 4), 4))
+    e.setv(s, "U2", e.MOD(e.V("M1_PRG"), 16))
+    ctx = e.IFELSE(s, e.LT(e.V("U1"), 2))
     with ctx as b:                     # 32KB switch
-        e.setv(b, "PRGB0", e.MUL(e.IDIV(e.V("T2"), 2), 2))
+        e.setv(b, "PRGB0", e.MUL(e.IDIV(e.V("U2"), 2), 2))
         e.setv(b, "PRGB1", e.ADD(e.V("PRGB0"), 1))
     with ctx.substack2() as b:
-        c2 = e.IFELSE(b, e.EQ(e.V("T1"), 2))
+        c2 = e.IFELSE(b, e.EQ(e.V("U1"), 2))
         with c2 as c:                  # fix first bank at $8000
             e.setv(c, "PRGB0", 0)
-            e.setv(c, "PRGB1", e.V("T2"))
+            e.setv(c, "PRGB1", e.V("U2"))
         with c2.substack2() as c:      # fix last bank at $C000
-            e.setv(c, "PRGB0", e.V("T2"))
+            e.setv(c, "PRGB0", e.V("U2"))
             e.setv(c, "PRGB1", e.SUB(e.V("PRGBANKS"), 1))
     # CHR mode = bit 4
-    e.setv(s, "T3", e.MOD(e.IDIV(e.V("M1_CTRL"), 16), 2))
-    ctx = e.IFELSE(s, e.EQ(e.V("T3"), 1))
+    e.setv(s, "U3", e.MOD(e.IDIV(e.V("M1_CTRL"), 16), 2))
+    ctx = e.IFELSE(s, e.EQ(e.V("U3"), 1))
     with ctx as b:                     # two 4K banks
         e.setv(b, "CHRB0", e.V("M1_CHR0"))
         e.setv(b, "CHRB1", e.V("M1_CHR1"))
@@ -206,16 +207,16 @@ def phase2_bus(e):
         e.setv(b, "CHRB0", e.MUL(e.IDIV(e.V("M1_CHR0"), 2), 2))
         e.setv(b, "CHRB1", e.ADD(e.V("CHRB0"), 1))
     # mirroring from bits 0-1
-    e.setv(s, "T4", e.MOD(e.V("M1_CTRL"), 4))
-    ctx = e.IFELSE(s, e.EQ(e.V("T4"), 0))
+    e.setv(s, "U4", e.MOD(e.V("M1_CTRL"), 4))
+    ctx = e.IFELSE(s, e.EQ(e.V("U4"), 0))
     with ctx as b:
         e.setv(b, "MIRROR", 2)
     with ctx.substack2() as b:
-        c2 = e.IFELSE(b, e.EQ(e.V("T4"), 1))
+        c2 = e.IFELSE(b, e.EQ(e.V("U4"), 1))
         with c2 as c:
             e.setv(c, "MIRROR", 3)
         with c2.substack2() as c:
-            c3 = e.IFELSE(c, e.EQ(e.V("T4"), 2))
+            c3 = e.IFELSE(c, e.EQ(e.V("U4"), 2))
             with c3 as d:
                 e.setv(d, "MIRROR", 1)     # vertical
             with c3.substack2() as d:
@@ -234,9 +235,9 @@ def phase2_bus(e):
             e.setv(c, "PRGB0", e.MOD(e.ARG("v"), e.V("PRGBANKS")))
         # CNROM (3)
         with e.IF(b, e.EQ(e.V("MAPPER"), 3)) as c:
-            e.setv(c, "T1", e.MUL(e.MOD(e.ARG("v"), e.OR(e.V("CHRBANKS"), 1)), 2))
-            e.setv(c, "CHRB0", e.V("T1"))
-            e.setv(c, "CHRB1", e.ADD(e.V("T1"), 1))
+            e.setv(c, "U1", e.MUL(e.MOD(e.ARG("v"), e.OR(e.V("CHRBANKS"), 1)), 2))
+            e.setv(c, "CHRB0", e.V("U1"))
+            e.setv(c, "CHRB1", e.ADD(e.V("U1"), 1))
         # MMC1 (1)
         with e.IF(b, e.EQ(e.V("MAPPER"), 1)) as c:
             cc = e.IFELSE(c, e.EQ(e.BIT7(e.ARG("v")), 1))
@@ -250,16 +251,16 @@ def phase2_bus(e):
                                          e.MUL(e.MOD(e.ARG("v"), 2), 16)))
                 e.chg(d, "M1_CNT", 1)
                 with e.IF(d, e.EQ(e.V("M1_CNT"), 5)) as f:
-                    e.setv(f, "T2", e.MOD(e.IDIV(e.ARG("a"), 8192), 4))
-                    cd = e.IFELSE(f, e.EQ(e.V("T2"), 0))
+                    e.setv(f, "U2", e.MOD(e.IDIV(e.ARG("a"), 8192), 4))
+                    cd = e.IFELSE(f, e.EQ(e.V("U2"), 0))
                     with cd as g:
                         e.setv(g, "M1_CTRL", e.V("M1_SR"))
                     with cd.substack2() as g:
-                        ce = e.IFELSE(g, e.EQ(e.V("T2"), 1))
+                        ce = e.IFELSE(g, e.EQ(e.V("U2"), 1))
                         with ce as h:
                             e.setv(h, "M1_CHR0", e.V("M1_SR"))
                         with ce.substack2() as h:
-                            cf = e.IFELSE(h, e.EQ(e.V("T2"), 2))
+                            cf = e.IFELSE(h, e.EQ(e.V("U2"), 2))
                             with cf as i:
                                 e.setv(i, "M1_CHR1", e.V("M1_SR"))
                             with cf.substack2() as i:
@@ -307,13 +308,13 @@ def phase2_bus(e):
             with c3 as d:
                 cd = e.IFELSE(d, e.EQ(e.ARG("a"), 16404))   # $4014 OAM DMA
                 with cd as f:
-                    e.setv(f, "T5", e.MUL(e.ARG("v"), 256))
-                    e.setv(f, "T6", 0)
+                    e.setv(f, "U5", e.MUL(e.ARG("v"), 256))
+                    e.setv(f, "U6", 0)
                     with e.REPEAT(f, 256) as g:
-                        e.call(g, "bus_read", a=e.ADD(e.V("T5"), e.V("T6")))
-                        e.repl(g, "OAM", e.ADD(e.MOD(e.ADD(e.V("P_OAMADDR"), e.V("T6")), 256), 1),
+                        e.call(g, "bus_read", a=e.ADD(e.V("U5"), e.V("U6")))
+                        e.repl(g, "OAM", e.ADD(e.MOD(e.ADD(e.V("P_OAMADDR"), e.V("U6")), 256), 1),
                                e.V("RESULT"))
-                        e.chg(g, "T6", 1)
+                        e.chg(g, "U6", 1)
                     e.chg(f, "CYCLES", 513)
                 with cd.substack2() as f:
                     with e.IF(f, e.EQ(e.ARG("a"), 16406)) as g:   # $4016 strobe
@@ -324,6 +325,17 @@ def phase2_bus(e):
 
 
 def controller(e):
+    # poll the keyboard -> CTRL_STATE (bit0=A .. bit7=Right)
+    keys = ["x", "z", "a", "s", "up arrow", "down arrow", "left arrow", "right arrow"]
+    s = e.defproc("ctrl_poll", [])
+    e.setv(s, "CTRL_STATE", 0)
+    for i, k in enumerate(keys):
+        menu = e._op("sensing_keyoptions", fields={"KEY_OPTION": [k]})
+        pressed = e._op("sensing_keypressed", KEY_OPTION=Reporter(menu.block_id))
+        with e.IF(s, pressed) as b:
+            e.chg(b, "CTRL_STATE", 1 << i)
+    s.finalize()
+
     s = e.defproc("ctrl_write", ["v"])
     e.setv(s, "CTRL_STROBE", e.MOD(e.ARG("v"), 2))
     with e.IF(s, e.EQ(e.V("CTRL_STROBE"), 1)) as b:
@@ -339,19 +351,17 @@ def controller(e):
     e.setv(s, "CTRL_SHIFT", e.ADD(e.IDIV(e.V("CTRL_SHIFT"), 2), 128))
     s.finalize()
 
-    # poll the keyboard -> CTRL_STATE (bit0=A .. bit7=Right)
-    keys = ["x", "z", "a", "s", "up arrow", "down arrow", "left arrow", "right arrow"]
-    s = e.defproc("ctrl_poll", [])
-    e.setv(s, "CTRL_STATE", 0)
-    for i, k in enumerate(keys):
-        menu = e._op("sensing_keyoptions", fields={"KEY_OPTION": [k]})
-        pressed = e._op("sensing_keypressed", KEY_OPTION=Reporter(menu.block_id))
-        with e.IF(s, pressed) as b:
-            e.chg(b, "CTRL_STATE", 1 << i)
-    s.finalize()
-
 
 def ppu_regs(e):
+    # ppu_incaddr must be defined before ppu_reg_read/ppu_reg_write call it
+    s = e.defproc("ppu_incaddr", [])
+    ctx = e.IFELSE(s, e.EQ(e.MOD(e.IDIV(e.V("P_CTRL"), 4), 2), 1))
+    with ctx as b:
+        e.setv(b, "P_V", e.MOD(e.ADD(e.V("P_V"), 32), 32768))
+    with ctx.substack2() as b:
+        e.setv(b, "P_V", e.MOD(e.ADD(e.V("P_V"), 1), 32768))
+    s.finalize()
+
     # ---- read ----
     s = e.defproc("ppu_reg_read", ["r"])
     e.setv(s, "RESULT", 0)
@@ -362,29 +372,20 @@ def ppu_regs(e):
     with e.IF(s, e.EQ(e.ARG("r"), 4)) as b:          # $2004 OAMDATA
         e.setv(b, "RESULT", e.IT("OAM", e.ADD(e.V("P_OAMADDR"), 1)))
     with e.IF(s, e.EQ(e.ARG("r"), 7)) as b:          # $2007 PPUDATA
-        e.setv(b, "T7", e.MOD(e.V("P_V"), 16384))
-        ctx = e.IFELSE(b, e.LT(e.V("T7"), 16128))
+        e.setv(b, "U7", e.MOD(e.V("P_V"), 16384))
+        ctx = e.IFELSE(b, e.LT(e.V("U7"), 16128))
         with ctx as c:
-            e.setv(c, "RESULT", e.V("P_BUF"))
-            e.call(c, "ppu_read", a=e.V("T7"))
-            e.setv(c, "P_BUF", e.V("RESULT"))
-            e.setv(c, "RESULT", e.V("T2"))
+            e.setv(c, "U2", e.V("P_BUF"))          # save old buffered value
+            e.call(c, "ppu_read", a=e.V("U7"))     # fetch new value into RESULT
+            e.setv(c, "P_BUF", e.V("RESULT"))      # buffer the new value
+            e.setv(c, "RESULT", e.V("U2"))         # return the OLD buffered value
         with ctx.substack2() as c:
-            e.call(c, "ppu_read", a=e.V("T7"))
-            e.setv(c, "T2", e.V("RESULT"))
-            e.call(c, "ppu_read", a=e.SUB(e.V("T7"), 4096))
+            e.call(c, "ppu_read", a=e.V("U7"))
+            e.setv(c, "U2", e.V("RESULT"))
+            e.call(c, "ppu_read", a=e.SUB(e.V("U7"), 4096))
             e.setv(c, "P_BUF", e.V("RESULT"))
-            e.setv(c, "RESULT", e.V("T2"))
+            e.setv(c, "RESULT", e.V("U2"))
         e.call(b, "ppu_incaddr")
-    s.finalize()
-
-    # NOTE: fix the buffered-read temp handling (T2 must hold old buffer)
-    s = e.defproc("ppu_incaddr", [])
-    ctx = e.IFELSE(s, e.EQ(e.MOD(e.IDIV(e.V("P_CTRL"), 4), 2), 1))
-    with ctx as b:
-        e.setv(b, "P_V", e.MOD(e.ADD(e.V("P_V"), 32), 32768))
-    with ctx.substack2() as b:
-        e.setv(b, "P_V", e.MOD(e.ADD(e.V("P_V"), 1), 32768))
     s.finalize()
 
     # ---- write ----
@@ -409,9 +410,9 @@ def ppu_regs(e):
             e.setv(c, "P_W", 1)
         with ctx.substack2() as c:
             # clear fineY (bits12-14) and coarseY (bits5-9), then set
-            e.setv(c, "T1", e.SUB(e.V("P_T"), e.MUL(e.MOD(e.IDIV(e.V("P_T"), 4096), 8), 4096)))
-            e.setv(c, "T1", e.SUB(e.V("T1"), e.MUL(e.MOD(e.IDIV(e.V("T1"), 32), 32), 32)))
-            e.setv(c, "P_T", e.ADD(e.V("T1"), e.ADD(e.MUL(e.MOD(v(), 8), 4096),
+            e.setv(c, "U1", e.SUB(e.V("P_T"), e.MUL(e.MOD(e.IDIV(e.V("P_T"), 4096), 8), 4096)))
+            e.setv(c, "U1", e.SUB(e.V("U1"), e.MUL(e.MOD(e.IDIV(e.V("U1"), 32), 32), 32)))
+            e.setv(c, "P_T", e.ADD(e.V("U1"), e.ADD(e.MUL(e.MOD(v(), 8), 4096),
                                                     e.MUL(e.IDIV(v(), 8), 32))))
             e.setv(c, "P_W", 0)
     with e.IF(s, e.EQ(e.ARG("r"), 6)) as b:      # $2006 PPUADDR
@@ -440,12 +441,16 @@ def phase3_cpu(e):
     e.lst("OPPAGE", pages)
 
     # ---- small helpers ----
+    # BOOL maps false->0(index1) / true->1(index2). Must be declared with real
+    # data BEFORE any e.IT("BOOL", ...) call, since e.lst()/e.IT() lazily
+    # create an empty list on first reference and a later e.lst() with items
+    # is then a no-op (list already exists) -- this bit the setnz proc badly.
+    e.lst("BOOL", [0, 1])
+
     s = e.defproc("setnz", ["v"])
     e.setv(s, "FZ", e.IT("BOOL", e.ADD(e.EQ(e.ARG("v"), 0), 1)))
     e.setv(s, "FN", e.BIT7(e.ARG("v")))
     s.finalize()
-    # BOOL maps false->0(index1) / true->1(index2) via Scratch's "true"/"false" strings
-    e.lst("BOOL", [0, 1])
 
     s = e.defproc("push", ["v"])
     e.call(s, "bus_write", a=e.ADD(256, e.V("SP")), v=e.ARG("v"))
@@ -482,6 +487,22 @@ def phase3_cpu(e):
     _addr_modes(e)
     _ops(e)
 
+    # ---- interrupts (defined before cpu_step, which calls them) ----
+    for name, vec, brk in (("do_nmi", 0xFFFA, 0), ("do_irq", 0xFFFE, 0)):
+        s = e.defproc(name, [])
+        e.call(s, "push", v=e.IDIV(e.V("PC"), 256))
+        e.call(s, "push", v=e.MOD(e.V("PC"), 256))
+        e.setv(s, "FB", 0)
+        e.call(s, "getP")
+        e.call(s, "push", v=e.V("RESULT"))
+        e.setv(s, "FI", 1)
+        e.call(s, "bus_read", a=vec)
+        e.setv(s, "T1", e.V("RESULT"))
+        e.call(s, "bus_read", a=vec + 1)
+        e.setv(s, "PC", e.ADD(e.MUL(e.V("RESULT"), 256), e.V("T1")))
+        e.chg(s, "CYCLES", 7)
+        s.finalize()
+
     # ---- cpu_step ----
     s = e.defproc("cpu_step", [])
     e.setv(s, "TRACEPC", e.V("PC"))
@@ -502,22 +523,6 @@ def phase3_cpu(e):
         e.chg(b, "CYCLES", 1)
     e.call(s, "exec_op")
     s.finalize()
-
-    # ---- interrupts ----
-    for name, vec, brk in (("do_nmi", 0xFFFA, 0), ("do_irq", 0xFFFE, 0)):
-        s = e.defproc(name, [])
-        e.call(s, "push", v=e.IDIV(e.V("PC"), 256))
-        e.call(s, "push", v=e.MOD(e.V("PC"), 256))
-        e.setv(s, "FB", 0)
-        e.call(s, "getP")
-        e.call(s, "push", v=e.V("RESULT"))
-        e.setv(s, "FI", 1)
-        e.call(s, "bus_read", a=vec)
-        e.setv(s, "T1", e.V("RESULT"))
-        e.call(s, "bus_read", a=vec + 1)
-        e.setv(s, "PC", e.ADD(e.MUL(e.V("RESULT"), 256), e.V("T1")))
-        e.chg(s, "CYCLES", 7)
-        s.finalize()
 
     s = e.defproc("cpu_reset", [])
     e.setv(s, "A", 0); e.setv(s, "X", 0); e.setv(s, "Y", 0)

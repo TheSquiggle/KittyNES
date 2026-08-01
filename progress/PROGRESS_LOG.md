@@ -92,6 +92,156 @@ Status: build in progress, not yet validated. This log will be updated with the
 addressing-mode list, register/flag variable layout, and opcode-table dump once
 the generator script is checked in to `code/`.
 
+## 2026-08-01 — Session resume after interruption: real-state assessment
+
+Picked up after a machine shutdown killed the previous session mid-Phase-3.
+Found TWO parallel, partially-overlapping generator lineages on disk:
+
+- `code/gen_full.py` (+ `gen_phase1_2.py`): older, self-contained, hand-written
+  generator. Runs standalone (imports the skill's canonical `sb3_builder.py`
+  directly). Produced the phase2/phase3/phase4 checkpoint `.sb3` files that
+  were already committed. Its Phase 2 bus is minimal (RAM only, no PPU
+  registers, no mappers). Its Phase 4 is a tiny 64-byte smoke-test program.
+- `code/build_core.py` + `code/tables6502.py`: a cleaner, data-driven rewrite
+  using an `Emu` helper class (`e.defproc`, `e.dispatch`, binary-search opcode
+  dispatch, etc.) that also already includes PPU register read/write
+  ($2000-$2007, including correct PPUDATA buffered-read semantics), NROM/UxROM/
+  CNROM mapper write dispatch, and a real MMC1 shift-register implementation.
+  This was **never successfully run** — it imports `from lib import Emu,
+  Reporter`, but no `code/lib.py` existed. The `Emu` class actually lived in
+  `code/sb3_builder.py` (a misleadingly-named helper layer, NOT a copy of the
+  skill's canonical `sb3_builder.py`).
+
+Decision: continue from `build_core.py`, since it's the more complete/capable
+lineage (has the Phase 5/6 scaffolding the other doesn't). Renamed
+`code/sb3_builder.py` -> `code/lib.py` (its actual role) to fix the import.
+
+### Bugs found and fixed while getting `build_core.py` to actually build/run
+
+All of these were latent, never-before-executed code — this is real
+first-time verification, not a re-check of working code:
+
+1. **Forward-referenced custom-block calls** (three places): `ppu_reg_read`
+   called `ppu_incaddr` before it was `defproc`'d; `controller()`'s
+   `ctrl_write`/`ctrl_read` called `ctrl_poll` before its definition;
+   `cpu_step` called `do_nmi`/`do_irq` before the interrupt-handler `defproc`
+   block. `Emu.call()` looks up the target in a dict populated at `defproc`
+   time, so calling a not-yet-defined proc raises `KeyError`. Fixed by
+   reordering each definition before its first caller.
+2. **PPUDATA buffered-read bug** (real logic bug, not just an ordering issue):
+   in `ppu_reg_read`'s VRAM branch (address < $3F00), the old buffered value
+   was being fetched into `RESULT`, then immediately overwritten by the fresh
+   `ppu_read` call before being saved anywhere, then a nonexistent temp (`T2`,
+   never set in that branch) was returned instead. Fixed to stash the old
+   buffer value in a temp first, then return that after updating the buffer.
+3. **Global scratch-temp collision between CPU and bus code (serious,
+   would have silently corrupted every ROM-space ABS/ABX/ABY/IND/IZX/IZY fetch
+   and every reset/NMI/IRQ vector fetch):** `cpu_reset`/`do_nmi`/`do_irq` and
+   all the 16-bit addressing modes stash a fetched low byte in global `T1`,
+   then fetch the high byte via another `bus_read` call — but `bus_read`'s
+   call chain (`mapper_read`, `chr_read`, `nt_index`, `ppu_read`/`ppu_write`,
+   `ppu_reg_read`) *also* used `T1`-`T9` as scratch, clobbering the CPU side's
+   saved low byte before it could be combined into the 16-bit address. Fixed
+   by renaming every temp used inside the bus/mapper/PPU-register/controller
+   family to `U1`-`U9`, a disjoint namespace from the CPU-side `T1`-`T9`, and
+   declaring `U1`-`U9` alongside `T1`-`T9` in `declare_state`. This is the
+   kind of bug that would have been very hard to catch without instruction-
+   level verification against real expected values (Phase 4).
+4. **Lazy-list initialization-order bug** (bit us twice): `Emu.lst(name,
+   items)` only actually populates the list if `name` isn't already registered
+   — but `Emu.IT(name, idx)` (list-item read) calls `self.lst(name)` internally
+   with no items, silently pre-registering an *empty* list. Two places
+   referenced a list via `IT()` before the real `e.lst(name, [real data])`
+   call: the `BOOL` list (`[0, 1]`, used by every `setnz` flag-setting call —
+   this meant Z/N flags were silently broken for literally every opcode) and
+   `PRGRAM` (used by `mapper_read` for $6000-$7FFF PRG-RAM reads). Fixed by
+   moving both real `e.lst(...)` declarations before their first `IT()`
+   reference. This class of bug is worth watching for elsewhere.
+
+### Phase 3 (6502 CPU core) — now genuinely DONE
+
+`code/gen_build.py` runs `declare_state` + `phase1_tables` + `phase2_bus` +
+`phase3_cpu` from `build_core.py` end-to-end, producing
+`progress/nes_emulator_wip_phase3_full.sb3` (1,931 blocks on the `CPU`
+sprite). `validate_sb3.py` structural check: clean, no issues.
+
+Implements: all ~151 official 6502 opcodes (illegal opcodes execute as 2-cycle
+NOPs) via `tables6502.py`'s `OPCODES` dict, all 13 addressing modes (IMP/ACC/
+IMM/ZP/ZPX/ZPY/ABS/ABX/ABY/IND/IZX/IZY/REL, including the 6502's page-wrap bug
+on indirect-JMP's high-byte fetch), all 7 status flags (C/Z/I/D/B/V/N) with a
+real (not stubbed) decimal-mode ADC/SBC path gated by a `DECMODE` global (NES's
+2A03 has decimal mode disabled in hardware, but the flag/opcode still exists —
+`DECMODE` defaults unset so behaves like real NES; can be flipped for testing),
+page-crossing cycle penalties on indexed absolute/indirect-indexed reads,
+branch-taken/page-cross cycle penalties, and reset/NMI/IRQ vectoring including
+BRK's software-interrupt push sequence.
+
+Key global variables: `A X Y SP PC` (registers), `FC FZ FI FD FB FV FN` (flags,
+each 0/1), `EFF VAL` (effective address / operand set by the addressing-mode
+dispatcher), `PAGEX` (page-cross flag), `OPC MODE OPID CYCLES` (per-instruction
+decode state), `T1-T9` (CPU-side scratch, safe to clobber across `bus_*`
+calls now), `U1-U9` (bus/mapper/PPU-register-side scratch, disjoint namespace).
+Key lists: `OPMODE OPID_T OPCYC OPPAGE` (256-entry opcode decode tables),
+`BOOL` (`[0,1]`, used to convert boolean reporters to 0/1 for flag storage).
+
+### Phase 4 (CPU correctness verification) — DONE
+
+Klaus Dormann's real `6502_functional_test.bin` needs ~30M executed
+instructions to complete; running that through `interp.py` (a Python
+re-implementation of the Scratch VM block-graph walker, since no local
+Node/scratch-vm environment is available) would take far too long to be
+practical here. Instead wrote `code/test_cpu.py` + `code/mini_asm.py` (a tiny
+two-pass 6502 assembler): a 36-check hand-authored program covering every
+addressing mode, ADC/SBC with carry-in and signed-overflow cases, CMP/CPX/CPY,
+AND/ORA/EOR, INC/DEC, register transfers, all 4 shift/rotate ops with carry,
+PHA/PLA, PHP/PLP (flag round-trip through the stack), JSR/RTS, BIT (N/V/Z from
+memory), and absolute addressing — each check does an immediate CMP-or-
+branch-on-condition assertion that jumps to a FAIL trap (writes $FF to RAM $00
+and self-loops) on any mismatch; success writes $AA to RAM $00 and self-loops.
+
+Baked into a 32KB NROM-style PRG-ROM image at $8000 with the reset vector
+pointed at it, loaded directly into `interp.py`'s list/var state (bypassing
+the need for a real .nes/mapper loader, which is Phase 7), then ran
+`cpu_reset` followed by `cpu_step` in a loop until RAM $00 became $AA or $FF.
+
+**Result: all 36 checks pass** (`RESULT: ALL 36 CHECKS PASSED`, final PC
+0x81E0, 230 CPU steps executed). Along the way, also found and fixed two bugs
+in the *test* itself (not the emulator): (a) test checkpoints were originally
+implemented as `LDA #n; STA zp` which clobbered the accumulator value under
+test — changed to a flag-preserving `PHP; INC zp; PLP` sequence; (b) value
+(`CMP`)-based checks were sometimes placed before flag-based (`BCC`/`BMI`/...)
+checks for the *same* instruction, and since `CMP` itself sets C/Z/N, it was
+clobbering the flags before they could be tested — reordered so flag checks
+always run first, value checks last, per instruction under test.
+
+Checkpoint file: `progress/nes_emulator_wip_phase3_full.sb3` (same file as
+Phase 3 — Phase 4 doesn't change the built emulator, it's a separate
+Python-side verification harness that loads the same block graph).
+
+### Phase 5 (mappers) — partially done already, unverified
+
+`build_core.py`'s `phase2_bus` already implements: NROM (mapper 0, default
+linear PRGB0/PRGB1 banking), UxROM (mapper 2, single 16K switchable bank at
+$8000, fixed last bank at $C000), CNROM (mapper 3, 8K CHR bank switch), and a
+real MMC1 (mapper 1) shift-register/control-register implementation
+(`mmc1_apply` recomputes PRG/CHR banking and mirroring from `M1_CTRL`/
+`M1_CHR0`/`M1_CHR1`/`M1_PRG` on every 5th shift-register write, matching real
+MMC1 behavior including the reset-on-bit7 case). This has NOT been exercised
+by a dedicated test yet — flagged as a follow-up before relying on it.
+
+### What's left (not started this session)
+
+- Phase 6: PPU background rendering (nametable/pattern-table/palette lookup ->
+  pen framebuffer) and sprite/OAM rendering + scrolling (loopy v/t/x/w — the
+  register plumbing for these already exists in `ppu_reg_read`/`ppu_reg_write`,
+  just not the per-scanline/per-pixel rendering loop).
+- Phase 7: iNES header parser (Python-side, build-time) emitting PRG_ROM/CHR_ROM
+  Scratch lists + mapper config from a real `.nes` file.
+- Phase 8: main loop tying CPU/PPU/bus together with 3:1 PPU:CPU timing, NMI on
+  vblank, framebuffer flush to the stage each frame.
+- A dedicated Phase 5 mapper-switching test (bank-switch a UxROM/MMC1 ROM and
+  verify the bus reads the newly-selected bank).
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*

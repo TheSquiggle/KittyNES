@@ -10,7 +10,15 @@ updated continuously as the background build agent works through phases.
 ## Directory layout
 
 - `code/` — Python generation scripts (the actual generator source of truth) and
-  the `sb3_builder.py` library used to construct `.sb3` files programmatically.
+  the `lib.py` library (Emu wrapper over the raw sb3_builder primitives) used to
+  construct `.sb3` files programmatically. Current canonical generator is
+  `code/build_core.py` (driven by `code/gen_build.py`) + `code/tables6502.py`
+  (opcode table) + `code/test_cpu.py` (Phase 4 correctness suite, run via
+  `code/interp.py`, a Python re-implementation of the Scratch VM that walks the
+  real generated block graph). `code/gen_full.py` and `code/gen_phase1_2.py` are
+  an earlier, simpler, self-contained generator (phases 1-4, no mapper/PPU
+  register scaffolding) kept for reference/checkpoints but superseded by
+  `build_core.py` going forward.
 - `progress/` — intermediate and final `.sb3` build artifacts, one per validated
   milestone, plus `PROGRESS_LOG.md` with a running phase-by-phase log.
 - `research/` — notes on the 6502 ISA, NES memory map, PPU behavior, mapper specs,
@@ -25,9 +33,27 @@ See [`progress/PROGRESS_LOG.md`](progress/PROGRESS_LOG.md) for the current
 phase-by-phase status. As of the last update:
 
 - **Phase 1 (bitwise-op lookup tables): DONE, validated**
-- **Phase 2 (memory bus): DONE, validated**
-- **Phase 3 (6502 CPU core): IN PROGRESS**
-- Phases 4–8 (CPU verification, mappers, PPU, cartridge loader, main loop): not started
+- **Phase 2 (memory bus + PPU register stubs + mapper dispatch scaffolding): DONE, validated**
+- **Phase 3 (6502 CPU core, all 151 official opcodes/13 addressing modes/7 flags/NMI+IRQ+reset): DONE, validated**
+- **Phase 4 (CPU correctness verification): DONE — 36-check hand-authored test suite
+  (all addressing modes, ADC/SBC w/ signed-overflow, CMP/CPX/CPY, shifts/rotates,
+  stack, JSR/RTS, BIT, branches) passes 100% against the actual generated block
+  graph via `code/interp.py`.**
+- **Phase 5 (mappers): PARTIALLY DONE inside Phase 2's bus — NROM/UxROM/CNROM
+  write dispatch and a real MMC1 shift-register implementation exist in
+  `build_core.py`'s `mapper_write`/`mmc1_apply`, but this is unverified by a
+  dedicated mapper test.**
+- Phase 6 (PPU rendering — background/sprites to a pen framebuffer, scrolling):
+  register read/write plumbing exists ($2000-$2007 emulated correctly including
+  the PPUDATA read-buffer semantics), but no actual pixel rendering yet — NOT STARTED.
+- Phase 7 (cartridge/.nes loader): not started.
+- Phase 8 (main loop, CPU/PPU timing, NMI-on-vblank, framebuffer flush): not started.
+
+See `progress/PROGRESS_LOG.md` for the detailed bug-fix history from this
+session (several real correctness bugs were found and fixed while getting
+Phase 3/4 to actually pass: forward-referenced custom-block calls, global
+scratch-temp-variable collisions between CPU and bus code, and a lazy-list
+initialization-order bug that silently zeroed out the `BOOL`/`PRGRAM` lists).
 
 ## Build system
 
