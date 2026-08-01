@@ -555,6 +555,46 @@ a two-game combo pack, so PRG bank-switching between SMB and Duck Hunt is
 expected), not just a synthetic test writing it. Full detail, including a
 frame-by-frame table, in `docs/real_rom_testing.md`.
 
+## 2026-08-01 — Audio prototype: "click train" technique (UNVERIFIED, standalone)
+
+Before investing in a full Phase 9 APU, prototyped and tested (structurally
+only — see below) the user's proposed audio approximation: approximate an
+NES channel's pitch by rapidly repeating a short click/pop sound, with the
+inter-click silence baked directly into the WAV asset itself (so total
+asset duration = exactly `1/frequency`) rather than timed by a Scratch
+script loop (which is far too imprecise — frame-quantized — for audible
+pitch spacing). The driving script is then just `forever: play sound
+<note> until done`, relying on `sound_playuntildone` being a yielding block
+whose actual timing is handled by the browser's real audio engine, not
+Scratch's tick rate.
+
+**This is explicitly NOT a completed feature.** Built as a standalone
+prototype, deliberately NOT integrated into the main `nes_emulator.sb3`
+build: `code/audio_prototype.py` generates 5 WAV assets (110/440/880/2000/
+4000 Hz, 44.1kHz 16-bit mono PCM, decaying-sine click + silence padding)
+and a single-sprite `.sb3` (`progress/audio_prototype.sb3`, keys 1-5 switch
+test note, green-flag starts the loop). `validate_sb3.py`: structurally
+clean — **that is the only thing verified programmatically.** Whether it
+actually sounds like clean, steady, correctly-pitched tones (vs. choppy/
+drifting/noisy) can only be confirmed by a human listening in real
+TurboWarp/Scratch, which hasn't happened yet.
+
+One real finding during generation (not a listening result, a numeric one):
+a naive "clamp click length to fit the period" approach left almost no
+silence gap starting around 330Hz (period shorter than the 3ms target click
+length) — much lower than expected. Changed to cap the click at 40% of the
+period at every frequency, meaning the click itself gets proportionally
+shorter (down to ~4 samples at 4000Hz) as pitch rises. Whether a 4-sample
+click still reads as a clean "pop" is itself an open question for the
+listening test.
+
+Full technique writeup, WAV-generation math, the click-duration finding,
+and exactly what to listen for/report back: `research/audio_click_train_approach.md`.
+**Full Phase 9 APU integration (all 4 channels, real $4000-$4013 register
+writes, envelope/sweep/length-counter approximation) is gated on this
+prototype getting confirmed to actually sound right — do not build on top
+of this technique until that feedback comes back.**
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*
