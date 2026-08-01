@@ -44,9 +44,15 @@ phase-by-phase status. As of the last update:
   approach as the CPU suite) passes for all 4 mappers, including MMC1's
   5-write serial-shift protocol and bit7-reset case. Found and fixed a real
   bug in CNROM bank selection along the way (see `docs/mapper_specs.md`).
-- Phase 6 (PPU rendering — background/sprites to a pen framebuffer, scrolling):
-  register read/write plumbing exists ($2000-$2007 emulated correctly including
-  the PPUDATA read-buffer semantics), but no actual pixel rendering yet — NOT STARTED.
+- **Phase 6a (PPU background rendering): DONE, verified** — pattern-table tile
+  decode (lookup-table bitplane extraction), attribute-table palette-group
+  resolution, and a `render_bg_frame` proc filling a 256x240 `FB` framebuffer
+  list, plus a batched (per-run, not per-pixel) `flush_fb_to_pen` Pen output.
+  11-check verification suite in `code/test_ppu_bg.py`, full-frame stress test
+  (960 tiles, 61,440 pixels) completes cleanly. See `docs/nes_ppu_notes.md`.
+  **Not yet done:** scrolling (register plumbing exists, renderer doesn't
+  read it yet), multi-nametable, PPUMASK bits, sprites/OAM, per-scanline
+  timing — all explicitly deferred, see the doc's "Not yet implemented".
 - Phase 7 (cartridge/.nes loader): not started.
 - Phase 8 (main loop, CPU/PPU timing, NMI-on-vblank, framebuffer flush): not started.
 

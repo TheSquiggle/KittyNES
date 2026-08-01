@@ -270,6 +270,46 @@ Result: **all mapper checks pass** (`ALL MAPPER CHECKS PASSED`). Rebuilt
 `validate_sb3.py` clean. New doc: `docs/mapper_specs.md` (per-mapper register
 layout, bit-level protocol details, and the bug found).
 
+## 2026-08-01 — Phase 6a: PPU background rendering — DONE (rendering, no scroll yet)
+
+Added `phase6_ppu_bg(e)` to `code/build_core.py`. New global lists: `FB`
+(256*240=61,440 entries, 1-indexed, `FB[y*256+x+1]` = resolved NES palette
+index 0-63) and `PIXBIT_T` (256*8=2,048 entries, pattern-table bitplane
+bit-extraction table, same lookup-table philosophy as Phase 1's AND/OR/XOR
+tables). New procs: `bg_update_patbase`, `bg_setup_tile`, `bg_row_planes`,
+`bg_pixel_val`, `render_bg_region` (row0/row1/col0/col1, uses dedicated
+`RB_*` globals as loop counters since proc args aren't writable loop vars in
+this Emu model), `render_bg_frame` (`render_bg_region(0,30,0,32)`, the full
+nametable-0 background), `flush_fb_row`/`flush_fb_to_pen` (Pen output,
+batched into one horizontal `pen_setPenColorToColor`+line per same-color
+run per row rather than per-pixel stamps).
+
+Full design writeup, including the attribute-table quadrant/palette-group
+math and the buffered-read-quirk-preserving `ppu_read` integration, in the
+new `docs/nes_ppu_notes.md`.
+
+Verified with new `code/test_ppu_bg.py` (11 checks: solid tiles, a
+stripe tile testing per-pixel color-index-1-vs-2 resolution, the
+transparent/universal-bg special case, and 2 different attribute quadrants
+resolving to different palette groups correctly) -- **all pass**. Also ran
+a full 960-tile/61,440-pixel `render_bg_frame` through `interp.py` as a
+stress test: completes in ~3.4s / 4.86M interpreted steps, no errors. A
+hand-verified 8x8-tile checkerboard pattern (described in
+`docs/nes_ppu_notes.md`) confirms the expected alternating-color layout
+programmatically (screenshot not possible -- `interp.py` is a headless
+Python re-implementation and treats `pen_*` as no-ops by design; the real
+visual only exists once loaded into actual Scratch/TurboWarp).
+
+Rebuilt `progress/nes_emulator_wip_phase3_full.sb3`: 2,179 blocks now.
+`validate_sb3.py`: clean. Reran `test_cpu.py` (36/36) and `test_mappers.py`
+(all pass) to confirm nothing regressed.
+
+Explicitly deferred (see `docs/nes_ppu_notes.md`'s "Not yet implemented"):
+scrolling (loopy v/t/x/w register *plumbing* already exists from Phase 2,
+just not read by the renderer yet), multi-nametable rendering, PPUMASK
+bits, sprites/OAM, and per-scanline cycle-accurate timing (Phase 8
+territory).
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*

@@ -56,7 +56,8 @@ def declare_state(e):
               "P_W", "P_BUF", "NMI_PENDING", "IRQ_PENDING",
               "CTRL_STROBE", "CTRL_SHIFT", "CTRL_STATE",
               "SCANLINE", "FRAME", "DECMODE", "HALT", "TRACEPC", "CYCLEACC",
-              "SPR0_THIS", "RUN"]:
+              "SPR0_THIS", "RUN",
+              "BG_PATBASE", "BGTILE", "BGPALSEL", "BGP0", "BGP1", "BGCOL"]:
         e.var(v)
     e.lst("RAM", [0] * 2048)
     e.lst("VRAM", [0] * 2048)
@@ -73,6 +74,19 @@ def declare_state(e):
     e.lst("SPRAT", [0] * 8)
     e.lst("SPRID", [0] * 8)
     e.var("SPRN")
+    # framebuffer: 256x240, 1-indexed, pixel(x,y) = FB[y*256+x+1], stores the
+    # resolved NES palette index (0-63) for that pixel, ready for a PALRGB
+    # lookup at pen-flush time.
+    e.lst("FB", [0] * (256 * 240))
+    # bit-extraction table for pattern-table tile decode: PIXBIT_T[byte*8+bitpos+1]
+    # = bit (7-bitpos) of byte, i.e. bitpos 0 is the LEFTMOST pixel of the row
+    # (matches the CHR-ROM convention: bit 7 of the plane byte is the leftmost
+    # pixel). Same lookup-table philosophy as Phase 1's bitwise-op tables.
+    PIXBIT = [0] * (256 * 8)
+    for byte in range(256):
+        for bitpos in range(8):
+            PIXBIT[byte * 8 + bitpos] = (byte >> (7 - bitpos)) & 1
+    e.lst("PIXBIT_T", PIXBIT)
 
 
 def phase2_bus(e):
@@ -541,6 +555,155 @@ def phase3_cpu(e):
     e.setv(s, "PC", e.ADD(e.MUL(e.V("RESULT"), 256), e.V("T1")))
     e.setv(s, "NMI_PENDING", 0)
     e.setv(s, "IRQ_PENDING", 0)
+    s.finalize()
+
+
+# =====================================================================
+# Phase 6a - PPU background rendering (pattern table -> framebuffer)
+# =====================================================================
+def phase6_ppu_bg(e):
+    # ---- bg_update_patbase: BG pattern-table base from PPUCTRL bit 4 ----
+    s = e.defproc("bg_update_patbase", [])
+    ctx = e.IFELSE(s, e.EQ(e.MOD(e.IDIV(e.V("P_CTRL"), 16), 2), 1))
+    with ctx as b:
+        e.setv(b, "BG_PATBASE", 4096)
+    with ctx.substack2() as b:
+        e.setv(b, "BG_PATBASE", 0)
+    s.finalize()
+
+    # ---- bg_setup_tile col row -> BGTILE (pattern id), BGPALSEL (0-3) ----
+    s = e.defproc("bg_setup_tile", ["col", "row"])
+    nt_addr = e.ADD(0x2000, e.ADD(e.MUL(e.ARG("row"), 32), e.ARG("col")))
+    e.call(s, "ppu_read", a=nt_addr)
+    e.setv(s, "BGTILE", e.V("RESULT"))
+    # attribute table: one byte per 4x4-tile (32x32px) block, 8 bytes/row
+    attr_addr = e.ADD(0x23C0,
+                       e.ADD(e.MUL(e.IDIV(e.ARG("row"), 4), 8), e.IDIV(e.ARG("col"), 4)))
+    e.call(s, "ppu_read", a=attr_addr)
+    e.setv(s, "U1", e.V("RESULT"))  # attribute byte (bus-family scratch is fine here, no CPU nesting)
+    # quadrant shift: 0/2/4/6 depending on which 2x2-tile quadrant (col,row) is in
+    e.setv(s, "U2", e.ADD(e.MUL(e.MOD(e.IDIV(e.ARG("row"), 2), 2), 4),
+                          e.MUL(e.MOD(e.IDIV(e.ARG("col"), 2), 2), 2)))
+    # pal_select = (attr_byte >> shift) & 3, done via IDIV/MOD (shift in {0,2,4,6}
+    # so 2^shift in {1,4,16,64} -- precompute via repeated doubling, no bit ops needed)
+    ctx = e.IFELSE(s, e.EQ(e.V("U2"), 0))
+    with ctx as b:
+        e.setv(b, "U3", 1)
+    with ctx.substack2() as b:
+        c2 = e.IFELSE(b, e.EQ(e.V("U2"), 2))
+        with c2 as c:
+            e.setv(c, "U3", 4)
+        with c2.substack2() as c:
+            c3 = e.IFELSE(c, e.EQ(e.V("U2"), 4))
+            with c3 as d:
+                e.setv(d, "U3", 16)
+            with c3.substack2() as d:
+                e.setv(d, "U3", 64)
+    e.setv(s, "BGPALSEL", e.MOD(e.IDIV(e.V("U1"), e.V("U3")), 4))
+    s.finalize()
+
+    # ---- bg_row_planes py -> BGP0, BGP1 (the two bitplane bytes for tile row py) ----
+    s = e.defproc("bg_row_planes", ["py"])
+    e.call(s, "ppu_read", a=e.ADD(e.V("BG_PATBASE"),
+                                   e.ADD(e.MUL(e.V("BGTILE"), 16), e.ARG("py"))))
+    e.setv(s, "BGP0", e.V("RESULT"))
+    e.call(s, "ppu_read", a=e.ADD(e.V("BG_PATBASE"),
+                                   e.ADD(e.MUL(e.V("BGTILE"), 16), e.ADD(e.ARG("py"), 8))))
+    e.setv(s, "BGP1", e.V("RESULT"))
+    s.finalize()
+
+    # ---- bg_pixel_val px -> RESULT = resolved NES palette index (0-63) ----
+    s = e.defproc("bg_pixel_val", ["px"])
+    e.setv(s, "U4", e.ADD(e.MUL(e.V("BGP0"), 8), e.ARG("px")))
+    e.setv(s, "U5", e.ADD(e.MUL(e.V("BGP1"), 8), e.ARG("px")))
+    e.setv(s, "BGCOL", e.ADD(e.IT("PIXBIT_T", e.ADD(e.V("U4"), 1)),
+                             e.MUL(e.IT("PIXBIT_T", e.ADD(e.V("U5"), 1)), 2)))
+    ctx = e.IFELSE(s, e.EQ(e.V("BGCOL"), 0))
+    with ctx as b:
+        e.setv(b, "U6", 0)  # universal background color = palette RAM index 0
+    with ctx.substack2() as b:
+        e.setv(b, "U6", e.ADD(e.MUL(e.V("BGPALSEL"), 4), e.V("BGCOL")))
+    e.call(s, "ppu_read", a=e.ADD(0x3F00, e.V("U6")))
+    s.finalize()
+
+    # ---- render_bg_region row0 row1 col0 col1 -> fills FB for that tile range.
+    # Procedure args are call-time-only values (not writable loop variables in
+    # this Emu model), so loop counters live in dedicated globals instead. ----
+    e.var("RB_ROW"); e.var("RB_COL"); e.var("RB_ROW1"); e.var("RB_COL0"); e.var("RB_COL1")
+    e.var("RB_PY"); e.var("RB_PX")
+    s = e.defproc("render_bg_region", ["row0", "row1", "col0", "col1"])
+    e.call(s, "bg_update_patbase")
+    e.setv(s, "RB_ROW", e.ARG("row0"))
+    e.setv(s, "RB_ROW1", e.ARG("row1"))
+    e.setv(s, "RB_COL0", e.ARG("col0"))
+    e.setv(s, "RB_COL1", e.ARG("col1"))
+    with e.UNTIL(s, e.EQ(e.V("RB_ROW"), e.V("RB_ROW1"))) as rowbody:
+        e.setv(rowbody, "RB_COL", e.V("RB_COL0"))
+        with e.UNTIL(rowbody, e.EQ(e.V("RB_COL"), e.V("RB_COL1"))) as colbody:
+            e.call(colbody, "bg_setup_tile", col=e.V("RB_COL"), row=e.V("RB_ROW"))
+            e.setv(colbody, "RB_PY", 0)
+            with e.UNTIL(colbody, e.EQ(e.V("RB_PY"), 8)) as pyloop:
+                e.call(pyloop, "bg_row_planes", py=e.V("RB_PY"))
+                e.setv(pyloop, "RB_PX", 0)
+                with e.UNTIL(pyloop, e.EQ(e.V("RB_PX"), 8)) as pxloop:
+                    e.call(pxloop, "bg_pixel_val", px=e.V("RB_PX"))
+                    # FB index = (row*8+py)*256 + (col*8+px) + 1
+                    fb_idx = e.ADD(
+                        e.MUL(e.ADD(e.MUL(e.V("RB_ROW"), 8), e.V("RB_PY")), 256),
+                        e.ADD(e.ADD(e.MUL(e.V("RB_COL"), 8), e.V("RB_PX")), 1))
+                    e.repl(pxloop, "FB", fb_idx, e.V("RESULT"))
+                    e.chg(pxloop, "RB_PX", 1)
+                e.chg(pyloop, "RB_PY", 1)
+            e.chg(colbody, "RB_COL", 1)
+        e.chg(rowbody, "RB_ROW", 1)
+    s.finalize()
+
+    # ---- render_bg_frame: the full 32x30-tile (256x240px) nametable 0 ----
+    s = e.defproc("render_bg_frame", [])
+    e.call(s, "render_bg_region", row0=0, row1=30, col0=0, col1=32)
+    s.finalize()
+
+    # ---- flush_fb_to_pen: draw FB to the stage via Pen, batched as one
+    # horizontal pen-line per same-color run per row (not a stamp per pixel --
+    # 256 pixels/row collapse to however many color-change runs exist, which
+    # for typical tile-based NES content is usually << 256). Stage mapping:
+    # FB x(0..255) -> stage x(-128..127), FB y(0..239) -> stage y(119..-120)
+    # (NES y grows downward, Scratch y grows upward). ----
+    e.var("FL_ROW"); e.var("FL_X"); e.var("FL_RUNSTART"); e.var("FL_CUR")
+    s = e.defproc("flush_fb_row", ["row"])
+    fb_base = e.MUL(e.ARG("row"), 256)
+    e.setv(s, "FL_CUR", e.IT("FB", e.ADD(fb_base, 1)))
+    e.setv(s, "FL_RUNSTART", 0)
+    e.setv(s, "FL_X", 1)
+    stage_y = e.SUB(119, e.ARG("row"))
+    with e.UNTIL(s, e.EQ(e.V("FL_X"), 256)) as body:
+        e.setv(body, "U8", e.IT("FB", e.ADD(fb_base, e.ADD(e.V("FL_X"), 1))))
+        with e.IF(body, e.NOT(e.EQ(e.V("U8"), e.V("FL_CUR")))) as diff:
+            # close out the run [FL_RUNSTART, FL_X-1] in color FL_CUR
+            diff.stack("pen_setPenColorToColor",
+                       COLOR=e.IT("PALRGB", e.ADD(e.V("FL_CUR"), 1)))
+            diff.stack("motion_gotoxy", X=e.SUB(e.V("FL_RUNSTART"), 128), Y=stage_y)
+            diff.stack("pen_penDown")
+            diff.stack("motion_gotoxy", X=e.SUB(e.SUB(e.V("FL_X"), 1), 128), Y=stage_y)
+            diff.stack("pen_penUp")
+            e.setv(diff, "FL_RUNSTART", e.V("FL_X"))
+            e.setv(diff, "FL_CUR", e.V("U8"))
+        e.chg(body, "FL_X", 1)
+    # final run to the end of the row (x=255)
+    s.stack("pen_setPenColorToColor", COLOR=e.IT("PALRGB", e.ADD(e.V("FL_CUR"), 1)))
+    s.stack("motion_gotoxy", X=e.SUB(e.V("FL_RUNSTART"), 128), Y=stage_y)
+    s.stack("pen_penDown")
+    s.stack("motion_gotoxy", X=e.SUB(255, 128), Y=stage_y)
+    s.stack("pen_penUp")
+    s.finalize()
+
+    s = e.defproc("flush_fb_to_pen", [])
+    s.stack("pen_clear")
+    s.stack("pen_setPenSizeTo", SIZE=1)
+    e.setv(s, "FL_ROW", 0)
+    with e.UNTIL(s, e.EQ(e.V("FL_ROW"), 240)) as body:
+        e.call(body, "flush_fb_row", row=e.V("FL_ROW"))
+        e.chg(body, "FL_ROW", 1)
     s.finalize()
 
 
