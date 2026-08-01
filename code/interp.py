@@ -12,7 +12,7 @@ def _num(v):
     if isinstance(v, bool):
         return 1 if v else 0
     if isinstance(v, (int, float)):
-        return v
+        return _normnum(v)
     try:
         s = str(v).strip()
         if s == "":
@@ -29,6 +29,29 @@ def _str(v):
     if isinstance(v, float) and v == int(v):
         return str(int(v))
     return str(v)
+
+
+def _normnum(v):
+    """Collapse a whole-valued float back to int.
+
+    Real Scratch/JS numbers are all IEEE-754 doubles -- there is no int/float
+    type distinction at all, so 32799 and 32799.0 are literally the same
+    value on the real VM. Python DOES distinguish them, and several of our
+    operator emulations (chiefly operator_mod, which uses math.fmod --
+    always returns a Python float, even for exact-integer inputs) hand back
+    a `float` for what is mathematically a whole number. Once introduced,
+    that float "infects" every later arithmetic op that touches it (Python
+    promotes int+float -> float), so a value like PC that flows through
+    `MOD(ADD(PC,1),65536)` every single step permanently turns into a float
+    after its first mod. That's a real fidelity gap in the test harness
+    (it can mask genuine fractional-value bugs by making "is this exactly
+    representable as an int" impossible to check), even though it doesn't
+    reflect an actual computation error on the real VM. Normalize at each
+    arithmetic op's return so whole numbers stay `int` throughout.
+    """
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return v
 
 
 def _truthy(v):
@@ -147,10 +170,10 @@ class Interp:
         nxt = b.get("next")
 
         if op == "data_setvariableto":
-            self.vars[b["fields"]["VARIABLE"][0]] = self.inp(b, "VALUE", frame)
+            self.vars[b["fields"]["VARIABLE"][0]] = _normnum(self.inp(b, "VALUE", frame))
         elif op == "data_changevariableby":
             n = b["fields"]["VARIABLE"][0]
-            self.vars[n] = _num(self.vars.get(n, 0)) + _num(self.inp(b, "VALUE", frame))
+            self.vars[n] = _normnum(_num(self.vars.get(n, 0)) + _num(self.inp(b, "VALUE", frame)))
         elif op == "data_addtolist":
             self.lists.setdefault(b["fields"]["LIST"][0], []).append(self.inp(b, "ITEM", frame))
         elif op == "data_deletealloflist":
@@ -163,7 +186,7 @@ class Interp:
         elif op == "data_replaceitemoflist":
             l = self.lists[b["fields"]["LIST"][0]]
             idx = int(_num(self.inp(b, "INDEX", frame)))
-            val = self.inp(b, "ITEM", frame)
+            val = _normnum(self.inp(b, "ITEM", frame))
             if 1 <= idx <= len(l):
                 l[idx - 1] = val
         elif op == "data_insertatlist":
@@ -259,15 +282,16 @@ class Interp:
         if op == "argument_reporter_boolean":
             return _truthy(frame.get(b["fields"]["VALUE"][0], False))
         if op == "operator_add":
-            return _num(I("NUM1")) + _num(I("NUM2"))
+            return _normnum(_num(I("NUM1")) + _num(I("NUM2")))
         if op == "operator_subtract":
-            return _num(I("NUM1")) - _num(I("NUM2"))
+            return _normnum(_num(I("NUM1")) - _num(I("NUM2")))
         if op == "operator_multiply":
-            return _num(I("NUM1")) * _num(I("NUM2"))
+            return _normnum(_num(I("NUM1")) * _num(I("NUM2")))
         if op == "operator_divide":
             d = _num(I("NUM2"))
             n = _num(I("NUM1"))
-            return (n / d) if d != 0 else (float("inf") if n > 0 else (float("-inf") if n < 0 else float("nan")))
+            res = (n / d) if d != 0 else (float("inf") if n > 0 else (float("-inf") if n < 0 else float("nan")))
+            return _normnum(res)
         if op == "operator_mod":
             n, d = _num(I("NUM1")), _num(I("NUM2"))
             if d == 0:
@@ -275,14 +299,14 @@ class Interp:
             r = math.fmod(n, d)
             if r != 0 and ((r < 0) != (d < 0)):
                 r += d
-            return r
+            return _normnum(r)
         if op == "operator_round":
             return round(_num(I("NUM")))
         if op == "operator_mathop":
             o = b["fields"]["OPERATOR"][0]
             n = _num(I("NUM"))
-            return {"abs": abs, "floor": math.floor, "ceiling": math.ceil,
-                    "sqrt": lambda x: math.sqrt(x) if x >= 0 else float("nan")}[o](n)
+            return _normnum({"abs": abs, "floor": math.floor, "ceiling": math.ceil,
+                              "sqrt": lambda x: math.sqrt(x) if x >= 0 else float("nan")}[o](n))
         if op == "operator_lt":
             return _cmp(I("OPERAND1"), I("OPERAND2")) < 0
         if op == "operator_gt":

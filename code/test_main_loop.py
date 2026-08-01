@@ -136,6 +136,29 @@ check("SCANLINE wrapped back to a low value after frame advance",
       i_(interp.vars["SCANLINE"]) < 10, True)
 check("vblank flag cleared again after pre-render line", i_(interp.vars["P_STATUS"]) & 0x80, 0)
 
+# ---- regression check for the PC-goes-float bug found during real-ROM
+# testing (NEStress.NES smoke test): PC (and other integer-valued state)
+# must come back as an exact Python int after many steps, not a float with
+# a zero fractional part. Root cause was interp.py's operator_mod using
+# math.fmod (always returns float, even for exact-integer inputs) with no
+# normalization back to int -- since PC advances via
+# MOD(ADD(PC,1),65536) on essentially every instruction, this silently
+# turned PC into a float after the very first step, and it stayed a float
+# forever after (Python promotes int+float -> float on every subsequent
+# op). Fixed in interp.py by normalizing whole-valued floats back to int
+# at every arithmetic operator's return point (_normnum), not by touching
+# the generated Scratch blocks themselves -- this was purely a test-harness
+# fidelity gap (real Scratch/JS numbers are all doubles with no int/float
+# distinction to begin with), but a real one worth guarding against since
+# it could otherwise mask genuine fractional-value bugs in the interp by
+# making "is this exactly representable as an int" impossible to check. ----
+check("PC is an exact int after many instructions (no float creep)",
+      type(interp.vars["PC"]), int)
+check("SCANLINE is an exact int", type(interp.vars["SCANLINE"]), int)
+check("FRAME is an exact int", type(interp.vars["FRAME"]), int)
+check("A/X/Y/SP are exact ints",
+      all(type(interp.vars[r]) is int for r in ("A", "X", "Y", "SP")), True)
+
 # ---- separate check: with NMI disabled (PPUCTRL bit7=0), NMI must NOT fire ----
 e2 = Emu("CPU2")
 BC.declare_state(e2)
