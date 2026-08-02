@@ -276,3 +276,100 @@ frequencies in each) and report:
    like a viable building block for a real APU (clean steady pitches, no
    noticeable per-note gap tax), or is there still a fundamental problem
    worth flagging before Phase 9 work begins?
+
+## v2/v3 listening test results: still not fast enough — investigating a harder limitation
+
+The user tested v2/v3 and reported **the gap is still too large, even with
+the warp-mode fix.** Two things were checked:
+
+### Is the warp mutation actually correct/taking effect?
+
+Inspected the raw generated `.sb3` JSON directly (not just trusting the
+generator code): the `procedures_prototype` block's mutation is
+`{"proccode": "play_notes_forever", "argumentids": "[]", ..., "warp":
+"true"}`. **This is the correct, standard sb3 format** — all mutation
+fields in the sb3 schema are strings (a holdover from the format's
+XML-derived mutation-tag-attribute origins), so `"warp": "true"` (string,
+not JSON boolean `true`) is exactly what a real Scratch project export
+looks like for a warp-mode custom block. This is not a serialization bug;
+the warp flag is genuinely applied and correctly written out.
+
+### The likely remaining bottleneck: audio-engine startup latency, not script timing
+
+Given the warp fix is confirmed correctly applied and the gap persists,
+the most plausible remaining explanation is a bottleneck **below the level
+any Scratch block can control**: `sound_playuntildone` is designed to
+yield while a sound plays, but every cycle it ALSO has to physically START
+a brand-new sound instance in the browser's underlying audio engine (Web
+Audio API in both scratch-vm and TurboWarp) — creating a new
+`AudioBufferSourceNode`, connecting it into the audio graph, and
+scheduling it to start. That work happens inside the browser's audio
+subsystem, not in Scratch's script scheduler, so **no amount of
+warp-mode/script-timing fixing can eliminate it if it's the actual
+bottleneck.** Typical real-world overhead for this kind of
+create-and-start operation can run from under a millisecond up to several
+milliseconds or more depending on the browser, garbage-collection
+pressure, and how many sounds are already active — any of which would be
+a significant-to-dominant fraction of the 0.25-9ms periods being tested
+here.
+
+**This cannot be measured from this environment** (no real browser or Web
+Audio engine available to profile) — it is the most plausible remaining
+explanation given what's been ruled out, not a confirmed measurement.
+
+### v4: a falsifiable test to narrow this down
+
+`code/audio_prototype_v4_bassfloor.py` ->
+`progress/audio_prototype_v4_bassfloor.sb3`: 5 notes at 55/82/110/165/220
+Hz (periods 4.5-18.2ms — roughly the NES triangle channel's low end),
+same warp-fixed structure as v2/v3.
+
+**The specific, falsifiable prediction being tested**: if the bottleneck
+is a roughly-fixed per-cycle audio-engine startup cost, that fixed cost is
+a much SMALLER fraction of a long (low-frequency) period than a short
+one — so low notes here should sound comparatively cleaner/tighter than
+the original 2000-4000Hz test range, with the gap visibly shrinking as you
+go from 220Hz down toward 55Hz. **If even the lowest note (55Hz, ~18ms
+period) still sounds gappy in a way that doesn't clearly improve versus
+the higher frequencies, that would argue AGAINST the audio-engine-latency
+hypothesis** and point back toward an unresolved script-timing issue
+worth re-investigating instead.
+
+Please listen to v4 (keys 1-5 = 55/82/110/165/220 Hz) and report: does the
+gap noticeably shrink as you go from key 5 down to key 1? Any perceptible
+difference at all across that range is useful signal either way.
+
+### If this turns out to be a real hard limitation: proposed alternatives
+
+**Not implemented yet** — these are documented options for a future
+decision, not current work, pending the v4 result and the user's
+preference:
+
+1. **Restrict click-train to bass/low-frequency channels only** (e.g. the
+   lower portion of the NES triangle channel's range, which is
+   traditionally used for bass lines) — if the audio-engine floor is
+   confirmed, this is exactly the range where a fixed per-cycle cost is
+   least damaging.
+2. **For higher/melodic content (pulse channels, most of a typical NES
+   melody's range), use a fundamentally different technique**: a single
+   SUSTAINED, looping sample (started once, not restarted every cycle)
+   combined with Scratch's "set pitch effect" block to bend its pitch to
+   match the desired note. This avoids the per-cycle restart cost entirely
+   — pitch changes are a parameter tweak on an already-playing sound, not
+   a new playback. Tradeoff: this produces a fundamentally different,
+   almost certainly less "raw NES square/pulse wave" timbre (more like a
+   continuously-bending tone than a true 2-level pulse wave), and would
+   need its own prototype/listening test before being trusted.
+3. **Investigate whether Scratch/TurboWarp supports any form of
+   pre-created/pooled sound instances** that could be re-triggered with
+   lower per-cycle overhead than always creating a fresh one — not
+   confirmed to exist as an accessible Scratch-block-level capability, but
+   worth a documentation check before assuming option 2 is the only path
+   forward for higher frequencies.
+
+No claim is made here that the click-train technique "doesn't work" —
+only that v2/v3 did not resolve the reported gap, the warp-mode fix is
+confirmed correctly applied (ruling out that specific bug), and the most
+plausible remaining explanation is a hard limitation this project cannot
+fix at the Scratch-block level. The v4 listening test is the next concrete
+step to confirm or rule that out.

@@ -62,15 +62,32 @@ bug-by-bug. Summary:
 | 6b | Sprites (OAM, priority, sprite-0-hit, overflow) + loopy scroll registers, **including fine-X sub-tile scrolling** | DONE, verified (25+22 checks across 2 files) |
 | 7 | iNES cartridge (`.nes`) loader | DONE, verified (22 checks) |
 | 8 | Main loop: scanline-granularity CPU/PPU timing, vblank/NMI, Pen flush | DONE, verified (15 checks) |
-| 9 (audio) | APU — NOT built yet. A "click-train" pitch approximation technique is being prototyped/iterated (v1→v2→v3) in `progress/audio_prototype*.sb3`, standalone and unintegrated, pending human listening-test confirmation | PROTOTYPE, unverified |
+| 9 (audio) | APU — NOT built yet. A "click-train" pitch approximation technique is being prototyped/iterated (v1→v2→v3→v4) in `progress/audio_prototype*.sb3`, standalone and unintegrated. v2/v3's warp-mode timing fix is confirmed correctly applied but the gap persists — currently investigating a possible audio-engine startup-latency floor (see below) | PROTOTYPE, unverified, possible hard limitation under investigation |
 
 Every phase's generator code, design rationale, and test results are written
 up in detail in `progress/PROGRESS_LOG.md` and the relevant `docs/*.md` file.
-Real-ROM sprite garbling reported against a real game (SMB+Duck Hunt) was
-traced to the coarse-only scrolling gap and fixed — fine-X pixel scrolling
-is now implemented; see `progress/PROGRESS_LOG.md` for the full
-investigation (dedicated bug-hunt tests for 8x16 mode/flip/priority/OAM DMA
-all passed clean beforehand).
+
+**Open issue — real-ROM sprites (SMB+Duck Hunt) show wrong tile graphics:**
+initially misdiagnosed as a positional/scrolling problem (fixed fine-X
+scrolling as a result — a real, worthwhile fix, but not the actual bug).
+User clarified the real symptom is wrong tile *content*. Re-investigated
+sprite CHR/pattern-table fetch specifically, including real mapper-66
+CHR-bank-switch behavior compared directly against the background fetch
+path — 28 additional targeted checks all passed clean; **the bug has not
+been reproduced or found as of the latest update.** See
+`progress/PROGRESS_LOG.md`'s most recent entries and
+`docs/nes_ppu_notes.md` for the full investigation and recommended next
+diagnostic steps.
+
+**Open issue — audio click-train still not fast enough after the warp
+fix:** the warp-mode mutation was verified correct in the raw generated
+JSON (not a serialization bug); the leading remaining hypothesis is a
+fixed per-cycle audio-engine startup-latency floor that no Scratch-level
+fix can eliminate. `progress/audio_prototype_v4_bassfloor.sb3` tests a
+falsifiable prediction of that hypothesis (low frequencies should sound
+comparatively cleaner if it's right) — awaiting listening-test feedback.
+See `research/audio_click_train_approach.md` for full reasoning and
+proposed alternatives if the limitation is confirmed real.
 
 ## What v1 is and isn't
 

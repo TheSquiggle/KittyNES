@@ -250,6 +250,43 @@ special cases, and that `ppu_copy_horiz_v`/`ppu_copy_vert_v` each only
 touch their own half of the register). Also spot-checked
 `render_bg_line_scrolled` directly against a known stripe-tile pattern.
 
+## Real-ROM sprite investigation (SMB+Duck Hunt, UNRESOLVED as of this writing)
+
+A user reported sprites showing wrong tile graphics ("wrong items
+displayed") against a real "Super Mario Bros. + Duck Hunt" build. Two
+rounds of targeted, code-graph-level testing have NOT reproduced or
+explained this:
+
+- **Round 1** (positional/scrolling hypothesis, see PROGRESS_LOG.md): 25
+  checks in `code/test_ppu_sprites2.py` covering OAM DMA (including
+  destination-address wraparound), 8x16 sprite mode addressing (tile-bit0
+  pattern-table select, tile-pair split, PPUCTRL bit3 correctly ignored in
+  8x16 mode), and horizontal/vertical flip (independently and combined) —
+  all passed clean. Implemented fine-X sub-tile scrolling as the best
+  available hypothesis at the time (a real, separately-justified fix for a
+  documented gap), but the user later clarified the symptom is wrong
+  *tile content*, not misplacement, so this fix likely wasn't the answer.
+- **Round 2** (tile-identity / CHR-bank-awareness hypothesis): 28 more
+  checks in `code/test_sprite_chr_bank.py` — a spread of 16 distinctly-
+  marked tiles across both pattern tables (confirming tile index N always
+  pulls tile N's own data, no cross-contamination), and, more pointedly, a
+  real `MAPPER=66` (GxROM, the exact mapper this ROM uses) CHR-bank-switch
+  test performed via actual `bus_write` register writes (not just setting
+  `CHRB0`/`CHRB1` directly), comparing the background fetch path
+  (`ppu_read`) against the sprite fetch path (`spr_fetch_planes`) at the
+  identical CHR address across all 4 bank selections. **Sprite and
+  background fetch agree in every case** — `spr_fetch_planes` calls the
+  exact same bank-aware `ppu_read`/`chr_read` chain background tile fetch
+  uses; there is no separate or stale CHR addressing logic for sprites.
+
+**As of this writing, the reported "wrong tile graphics" bug has not been
+reproduced by any test.** This is reported honestly rather than assumed
+fixed. See PROGRESS_LOG.md's most recent entries for the recommended next
+diagnostic steps (a specific screenshot/frame from the user to construct a
+matching synthetic reproduction, or a CPU-side rather than PPU-side
+investigation, since sprite corruption downstream of a CPU bug that writes
+wrong values into OAM/mapper registers hasn't been ruled out).
+
 ## Not yet implemented (deferred to a later Phase 6 sub-pass or Phase 8)
 
 - **Fine-X pixel-level horizontal scroll** (see scope note above -- coarse

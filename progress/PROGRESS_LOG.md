@@ -690,6 +690,114 @@ compare across v1/v2/v3 in `research/audio_click_train_approach.md`.
 **Still not integrated into the main build; still no claim that any
 variant "works" — needs a second human listening test.**
 
+## 2026-08-01 — Sprite bug re-investigation: wrong-tile-data hypothesis (STILL UNRESOLVED)
+
+User clarified the actual SMB+Duck Hunt symptom: sprites show **wrong tile
+graphics** ("wrong items displayed"), not misplacement — so the fine-X
+scrolling fix from the previous entry almost certainly did NOT address the
+real bug, and the 25 earlier targeted tests (OAM DMA/8x16/flip) didn't
+rule it out either, since none specifically checked "does OAM tile-index N
+pull back CHR tile N's actual data, correctly bank-aware."
+
+Re-focused specifically on that. New `code/test_sprite_chr_bank.py` (28
+checks):
+
+1. **Distinct-tile spread**: 8 tiles in pattern-table bank 0 and 8 more in
+   bank 1, each with a unique marker byte, fetched via a sprite referencing
+   each tile index in turn (both `PPUCTRL` bit-3 states). All 16 checks
+   confirm tile index N reliably pulls back tile N's own data — no
+   cross-contamination between adjacent tiles or between pattern tables.
+2. **The specifically-suspected culprit — CHR bank switching**: built an 8
+   sub-bank (32K) CHR setup under `MAPPER=66` (GxROM, the exact mapper this
+   ROM uses), performed REAL `bus_write` calls to the GxROM register
+   (exactly how the actual game switches CHR banks) across all 4 possible
+   8K bank selections, and at each one compared — for the identical CHR
+   address — what the **background** fetch path (`ppu_read`, used by
+   `bg_setup_tile`/`bg_row_planes`) returns versus what the **sprite**
+   fetch path (`spr_fetch_planes`, called from `sprite_eval_line`) returns.
+   **All 12 checks pass: sprite and background fetch agree on every bank
+   selection**, both correctly resolving to the freshly-selected bank's
+   data. Confirmed via code read-through too: `spr_fetch_planes` calls the
+   exact same `ppu_read` proc (and therefore the same bank-aware
+   `chr_read`) that background tile fetch uses — there is no separate/
+   stale CHR addressing path for sprites.
+
+**Result: exhaustive targeted testing of exactly the hypothesis raised
+(sprite CHR/bank-fetch correctness) found no bug.** This is a genuinely
+inconclusive outcome, documented honestly rather than papered over: the
+"wrong tile" symptom has NOT been reproduced or explained by any test
+written so far, across two rounds of targeted investigation (positional/
+scrolling mechanisms in the previous entry, tile-identity/bank-awareness
+in this one). Full checklist and results in `docs/nes_ppu_notes.md`.
+
+**Recommended next steps** (not yet done): (a) get a screenshot or more
+specific description from the user of which sprite/screen shows the wrong
+graphic, so a matching synthetic scenario can be constructed instead of
+guessing at mechanisms; (b) instrument `run_smb_smoke.py`-style real-ROM
+execution to dump actual live OAM tile-index/attribute values alongside
+CHR bank state at a moment matching the user's report, if a specific
+frame/moment can be identified; (c) reconsider mechanisms not yet audited
+— e.g. whether `PRGB0`/`PRGB1` PRG bank-switch timing could somehow
+corrupt code that writes OAM/CHR-select values (a CPU-side bug manifesting
+as sprite corruption, not a PPU-side one) is not yet ruled out.
+
+## 2026-08-01 — Audio v2/v3 gap: warp fix confirmed correctly applied, but user reports still not fast enough
+
+User tested v2/v3 (the warp-mode fix): **still not popping fast enough.**
+Investigated two possible explanations:
+
+1. **Is the warp mutation actually taking effect?** Inspected the raw
+   generated JSON directly: `procedures_prototype`'s mutation is
+   `{"proccode": "play_notes_forever", ..., "warp": "true"}` — this is
+   the correct, standard sb3 format (mutation fields are always strings in
+   the sb3 JSON schema, including booleans — `"warp": "true"` is exactly
+   what a real Scratch export looks like for a warp-mode custom block, not
+   a serialization bug). **The warp flag is correctly applied and
+   correctly serialized.**
+2. **Given that, the most likely remaining explanation is an audio-engine
+   latency floor, not a script-timing bug.** `sound_playuntildone` yields
+   by design, but every cycle also has to physically START a brand-new
+   sound instance in the browser's Web Audio engine (creating/connecting/
+   scheduling a new buffer-source node) — overhead that lives entirely
+   below the level any Scratch block, warp mode included, can control. If
+   that per-cycle startup cost is even a few milliseconds, it would
+   dominate the 0.25-9ms periods being tested, regardless of script
+   scheduling. **This cannot be measured from this environment (no real
+   browser/audio engine available here)** — it's the most plausible
+   remaining explanation given the warp fix is confirmed correctly applied
+   and the problem persists, but it is a hypothesis, not a confirmed
+   diagnosis.
+
+Built `code/audio_prototype_v4_bassfloor.py` ->
+`progress/audio_prototype_v4_bassfloor.sb3`: 5 notes in the 55-220Hz range
+(roughly the NES triangle channel's low end, periods 4.5-18ms), same
+warp-fixed structure as v2/v3. This tests a specific, falsifiable
+prediction of the latency-floor hypothesis: since a fixed per-cycle
+startup cost would be a much SMALLER fraction of a long (low-frequency)
+period than a short one, low notes should sound comparatively cleaner than
+the original 2000-4000Hz range if the hypothesis is right — and if even
+the lowest note here still sounds gappy, that would point back toward an
+unresolved script-timing issue instead. Validated structurally; needs a
+human listening test (specifically: does the gap shrink from key 5 down to
+key 1).
+
+**Honest bottom line, not claiming anything works:** the click-train
+technique may have a hard floor on achievable frequency, below this
+project's control, if the audio-engine-latency hypothesis is confirmed.
+`research/audio_click_train_approach.md` now documents this and proposes
+concrete alternatives for if that turns out to be the case: (a) restrict
+click-train to bass/low-frequency channels only (where the floor is a
+smaller fraction of the period), (b) for higher/melodic content, use a
+SUSTAINED looping sample plus Scratch's "set pitch effect" block to bend
+pitch on an already-playing sound (avoiding the per-cycle
+restart-a-new-sound cost entirely, at the cost of a fundamentally
+different, less "raw NES" timbre), (c) test whether Scratch supports
+pre-created/pooled sound instances that could be triggered with lower
+per-cycle overhead than always starting fresh. None of these are
+implemented yet — this is a documented open decision point pending the
+v4 listening test and, ideally, the user's own read on which tradeoff
+they'd prefer if the technique's ceiling is confirmed to be real.
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*
