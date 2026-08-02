@@ -287,6 +287,29 @@ matching synthetic reproduction, or a CPU-side rather than PPU-side
 investigation, since sprite corruption downstream of a CPU bug that writes
 wrong values into OAM/mapper registers hasn't been ruled out).
 
+- **Round 3** (following a real screenshot showing correct shape but wrong/
+  speckled color — pointing at palette resolution): `code/test_palette.py`
+  (40 checks) verified all 4 background-attribute quadrants pick up the
+  correct palette group (through both the non-scrolled and the real,
+  scrolled tile-fetch paths), palette RAM's $3F10/14/18/1C mirroring, all 4
+  sprite palettes resolving correctly (explicitly ruling out degeneration
+  to a flat universal-background color), and the master 64-color palette
+  table against known hardware values. All clean.
+- Given three clean rounds, checked the one link in the pipeline that had
+  never been verified at all: **Pen-flush drawing** (`flush_fb_to_pen`/
+  `flush_fb_row`), previously untestable since `interp.py` treated `pen_*`
+  as no-ops. Extended `interp.py` to record every line segment Pen
+  actually draws (start/end/color), then `code/test_pen_flush.py` replayed
+  a busy, high-color-frequency scene's recorded segments into a synthetic
+  canvas and diffed all 61,440 pixels against `FB` — exact match, no gaps.
+  **The run-length drawing algorithm itself is now confirmed correct.**
+- Current leading hypothesis (unconfirmed, see PROGRESS_LOG.md for full
+  reasoning): real Scratch/TurboWarp's actual Pen rendering fidelity
+  (antialiasing/subpixel blending on short adjacent line strokes) — the
+  one part of this pipeline that genuinely cannot be verified without a
+  real browser, and the only remaining untested link after four rounds of
+  algorithm-level verification.
+
 ## Not yet implemented (deferred to a later Phase 6 sub-pass or Phase 8)
 
 - **Fine-X pixel-level horizontal scroll** (see scope note above -- coarse

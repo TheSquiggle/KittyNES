@@ -92,6 +92,7 @@ class Interp:
         self.steps = 0
         self.max_steps = max_steps
         self.pen = []
+        self.pen_runs = []  # list of (start_xy, end_xy, color) line segments actually drawn
         self.log = []
         self.keys = {}  # simulated keyboard state for sensing_keypressed, e.g. {"space": True}
 
@@ -244,9 +245,23 @@ class Interp:
             if op == "pen_setPenColorToColor":
                 self._pen_color = self.inp(b, "COLOR", frame)
             elif op == "motion_gotoxy":
-                self._pen_xy = (self.inp(b, "X", frame), self.inp(b, "Y", frame))
+                new_xy = (self.inp(b, "X", frame), self.inp(b, "Y", frame))
+                if getattr(self, "_pen_isdown", False):
+                    # a motion while pen is down draws a trail from the old
+                    # position to the new one -- record it as a completed
+                    # segment (start, end, color) so pen-flush line-drawing
+                    # logic (not just FB *contents*) can actually be
+                    # verified, not just treated as an unchecked no-op.
+                    self.pen_runs.append((getattr(self, "_pen_xy", (0, 0)), new_xy,
+                                          getattr(self, "_pen_color", 0)))
+                self._pen_xy = new_xy
             elif op == "pen_penDown":
+                self._pen_isdown = True
                 self.pen.append((getattr(self, "_pen_xy", (0, 0)), getattr(self, "_pen_color", 0)))
+            elif op == "pen_penUp":
+                self._pen_isdown = False
+            elif op == "pen_clear":
+                self.pen_runs = []
         else:
             raise RuntimeError("unsupported stack opcode: " + op)
         return nxt

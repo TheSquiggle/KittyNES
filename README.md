@@ -67,17 +67,20 @@ bug-by-bug. Summary:
 Every phase's generator code, design rationale, and test results are written
 up in detail in `progress/PROGRESS_LOG.md` and the relevant `docs/*.md` file.
 
-**Open issue — real-ROM sprites (SMB+Duck Hunt) show wrong tile graphics:**
-initially misdiagnosed as a positional/scrolling problem (fixed fine-X
-scrolling as a result — a real, worthwhile fix, but not the actual bug).
-User clarified the real symptom is wrong tile *content*. Re-investigated
-sprite CHR/pattern-table fetch specifically, including real mapper-66
-CHR-bank-switch behavior compared directly against the background fetch
-path — 28 additional targeted checks all passed clean; **the bug has not
-been reproduced or found as of the latest update.** See
-`progress/PROGRESS_LOG.md`'s most recent entries and
-`docs/nes_ppu_notes.md` for the full investigation and recommended next
-diagnostic steps.
+**Open issue — real-ROM sprites/tiles (SMB+Duck Hunt) show color
+corruption** (correct shape, wrong/speckled/flat-black color — a real
+screenshot showed a garbled brick pyramid texture and a Goomba rendering
+as a flat black block). Four rounds of exhaustive, targeted testing —
+positional/scrolling, tile-identity/CHR-bank-switching, palette/attribute/
+color resolution (all 4 quadrants, all 4 sprite palettes, palette RAM
+mirroring, the master color table), and finally a brand-new capability to
+actually verify the Pen-flush drawing algorithm itself (previously
+untestable) — **all came back clean; the bug has not been reproduced or
+found.** Leading remaining hypothesis: real Scratch/TurboWarp's Pen
+rendering fidelity (antialiasing on short line strokes), the one part of
+the pipeline that cannot be verified without a real browser — unconfirmed.
+See `progress/PROGRESS_LOG.md`'s most recent entries and
+`docs/nes_ppu_notes.md` for the full investigation.
 
 **Open issue — audio click-train still not fast enough after the warp
 fix:** the warp-mode mutation was verified correct in the raw generated

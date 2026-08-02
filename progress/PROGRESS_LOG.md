@@ -798,6 +798,101 @@ implemented yet — this is a documented open decision point pending the
 v4 listening test and, ideally, the user's own read on which tradeoff
 they'd prefer if the technique's ceiling is confirmed to be real.
 
+## 2026-08-01 — Sprite bug, round 3: palette resolution (STILL not found) + new pen-flush verification capability
+
+User sent an actual screenshot of SMB 1-1: brick/question-block pyramid
+shows correct SHAPE but speckled reddish-brown/black static texture; a
+Goomba sprite renders as a flat solid black block with no shading. Both
+symptoms share "correct shape, wrong/degenerate color" — pointing at
+palette resolution rather than tile fetch (already verified correct last
+round).
+
+New `code/test_palette.py` (40 checks): all 4 background-attribute
+quadrants (TL/TR/BL/BR) within a single attribute byte, each assigned a
+different palette group, verified through BOTH the non-scrolled
+(`bg_setup_tile`) AND the scrolled (`bg_setup_tile_v`, what the real main
+loop actually uses) code paths; palette RAM mirroring
+($3F10/14/18/1C -> $3F00/04/08/0C, confirmed correctly ignoring stored
+"decoy" values at the mirrored addresses); all 4 sprite palette-select
+values resolving to their correct distinct palette (explicitly checked
+none degenerate to the universal-background color, which would look like
+a flat black blob); and the master 64-color palette table spot-checked
+against known real 2C02 values. **Everything passed clean** (one initial
+failure was traced to a transcription error in the test's own expected
+value, not the emulator's palette table — corrected and reran clean).
+
+**This is now three rounds of exhaustive, specifically-targeted testing
+(positional/scrolling, tile-identity/CHR-bank-switching, and now
+palette/attribute/color resolution) with zero bugs found.** Given that
+pattern, looked at the one part of the rendering pipeline that had NEVER
+been checked at all in any round: `flush_fb_to_pen`/`flush_fb_row`, the
+Pen-drawing code that turns the computed `FB` framebuffer into actual
+on-screen pixels. `interp.py` previously treated all `pen_*` opcodes as
+pure no-ops (reasonable for everything else, since Pen output can't be
+inspected programmatically) — meaning the run-length line-drawing logic
+itself (which colors get drawn at which coordinates) had literally never
+been verified against `FB`'s contents, only `FB`'s contents themselves had
+ever been checked.
+
+**Added real verification capability**: `interp.py` now records
+`(start_xy, end_xy, color)` for every line segment actually drawn (a
+`motion_gotoxy` call while pen is down draws a trail, previously
+unrecorded — only the pen-down starting position was tracked before). New
+`code/test_pen_flush.py` builds a deliberately "busy" scene (4 tiles with
+high-frequency alternating bit patterns, multiple background palettes
+across quadrants, sprites layered on top — 3,556 line segments drawn),
+replays the recorded segments into a synthetic canvas, and compares every
+one of the 61,440 pixels against `FB` (resolved through `PALRGB`, exactly
+as `flush_fb_row` does it). **All 61,440 pixels match exactly, no gaps, no
+mismatches.** (One initial failure was the test comparing `FB`'s raw
+palette INDEX against Pen's drawn RGB value without resolving through
+`PALRGB` first — a test bug, corrected and reran clean.)
+
+**Honest status: the reported bug has not been found or reproduced after
+four rounds of exhaustive, algorithm-level verification covering every
+stage of the rendering pipeline this project controls** — tile fetch,
+CHR bank-awareness, palette/attribute resolution, and now the pen-flush
+drawing logic itself. Given that, the most plausible remaining
+explanations, in rough order of likelihood, are things this project's
+Python-based verification harness fundamentally cannot check:
+
+1. **Real Scratch/TurboWarp Pen rendering precision/antialiasing.** This
+   is the one link in the entire chain that requires an actual browser
+   engine to verify — `flush_fb_row`'s logic is now confirmed correct at
+   the algorithm level, but whether real Scratch draws a `pen size 1`
+   horizontal line as a crisp 1px-tall strip or with some antialiasing/
+   subpixel blending at the edges (especially for many short, adjacent,
+   differently-colored runs — exactly what a detailed brick texture or a
+   small sprite produces) cannot be tested here. This would explain
+   "speckled static" on high-detail regions and, if overlapping/blended
+   strokes darken toward black, could plausibly explain a small sprite
+   reading as a flat dark blob too. **This is a hypothesis, not a
+   confirmed finding** — it's the leading candidate specifically because
+   every other testable link in the chain has now been individually
+   verified correct.
+2. A CPU-side bug corrupting values before they reach OAM/PPU registers/
+   palette RAM (not yet specifically audited — everything checked so far
+   assumed OAM/CHR/PAL list contents were already correct and tested the
+   PPU-side consumption of that data, not how the CPU populates it in the
+   first place during real gameplay).
+3. Something specific to how this exact ROM's real, more complex
+   execution differs from every synthetic scenario tested (timing/
+   ordering interactions between many simultaneous game systems that no
+   isolated unit-style test reproduces).
+
+**If Pen rendering precision is confirmed as the cause, a concrete
+mitigation worth trying**: replace the run-length horizontal-line
+approach with individual costume "stamps" (even at a coarser granularity
+than per-pixel, e.g. per-run stamped rectangles) — a stamp is a discrete
+raster blit, not a vector line stroke, and shouldn't have the same
+antialiasing/blending behavior as a thin pen line. This has NOT been
+implemented — it's a next step to try if the current investigation stalls
+further and a screenshot comparison confirms rendering-fidelity artifacts
+specifically at run boundaries.
+
+Reran the full existing suite (250+ checks across every prior phase) —
+no regressions from the interp.py pen-tracking additions.
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*
