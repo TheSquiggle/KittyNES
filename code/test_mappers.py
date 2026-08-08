@@ -205,9 +205,20 @@ check("MMC1 post-reset PRG-select bank9: PRGB0", i_(interp.vars["PRGB0"]), 9)
 
 # =====================================================================
 # GxROM/MHROM (mapper 66): single register, whole-window bank switching.
-# Bits 0-1 select a 32K PRG bank (the ENTIRE $8000-$FFFF window switches
-# together -- no fixed-last-bank behavior like UxROM/MMC1), bits 4-5 select
-# an 8K CHR bank. This is exactly the mapper on "Super Mario Bros. + Duck
+# Register layout per the NESdev GxROM spec:
+#     7  bit  0
+#     ---- ----
+#     xxPP xxCC
+#       ||   ++- 8K CHR bank  (bits 1-0)
+#       ++------ 32K PRG bank (bits 5-4)
+# The 32K PRG window switches as a whole -- no fixed-last-bank behavior like
+# UxROM/MMC1. NOTE the field order: PRG is the HIGH field, CHR the LOW one.
+# This was originally implemented backwards, and the bug survived a 16-check
+# suite because every check used the value $11, which is SYMMETRIC (PRG=1,
+# CHR=1 under either reading) and therefore cannot distinguish them. The
+# asymmetric cases below ($10 / $01) are the ones that actually pin the
+# field order down -- see the regression note in PROGRESS_LOG.md.
+# This is exactly the mapper on "Super Mario Bros. + Duck
 # Hunt (USA).nes" (64K PRG = 4x 16K banks = 2x 32K GxROM banks, 16K CHR =
 # 2x 8K banks), which is what prompted adding mapper 66 support at all.
 # =====================================================================
@@ -240,7 +251,8 @@ check("GxROM initial: ppu_read $0000 (CHR bank0)", ppu_read(interp, 0x0000), 0)
 check("GxROM initial: ppu_read $1000 (CHR bank1)", ppu_read(interp, 0x1000), 1)
 
 # select PRG bank 1 (32K bank -> 16K banks 2,3), CHR bank 1 (8K -> 4K banks 2,3):
-# register value = PRG_bits(0-1)=1, CHR_bits(4-5)=1 -> 0b00010001 = 0x11
+# register value = PRG_bits(5-4)=1, CHR_bits(1-0)=1 -> 0b00010001 = 0x11
+# (symmetric value -- passes under either field order, see header note)
 bus_write(interp, 0x8000, 0x11)
 check("GxROM after select: PRGB0", i_(interp.vars["PRGB0"]), 2)
 check("GxROM after select: PRGB1", i_(interp.vars["PRGB1"]), 3)
@@ -258,6 +270,27 @@ check("GxROM after select: ppu_read $1000 (CHR bank1's 2nd 4K half)", ppu_read(i
 bus_write(interp, 0xFFF0, 0x00)  # back to bank 0 for both PRG and CHR
 check("GxROM: write via a different address ($FFF0) still works", i_(interp.vars["PRGB0"]), 0)
 check("GxROM: write via a different address also updates CHR", i_(interp.vars["CHRB0"]), 0)
+
+# ---- ASYMMETRIC field-order checks (the ones that actually caught the bug) ----
+# $10 = 0b0001_0000 -> PRG field (bits 5-4) = 1, CHR field (bits 1-0) = 0.
+# Under the WRONG (swapped) reading this would give PRGB0=0 / CHRB0=2, so
+# these checks fail loudly if the field order is ever flipped back.
+bus_write(interp, 0x8000, 0x10)
+check("GxROM $10: PRG field is bits 5-4 -> PRGB0=2", i_(interp.vars["PRGB0"]), 2)
+check("GxROM $10: PRGB1=3", i_(interp.vars["PRGB1"]), 3)
+check("GxROM $10: CHR field is bits 1-0 -> CHRB0=0", i_(interp.vars["CHRB0"]), 0)
+check("GxROM $10: CHRB1=1", i_(interp.vars["CHRB1"]), 1)
+check("GxROM $10: bus_read $8000 reads PRG 32K bank 1", bus_read(interp, 0x8000), 2)
+check("GxROM $10: ppu_read $0000 reads CHR 8K bank 0", ppu_read(interp, 0x0000), 0)
+
+# $01 = 0b0000_0001 -> PRG field = 0, CHR field = 1 (the exact mirror image).
+bus_write(interp, 0x8000, 0x01)
+check("GxROM $01: PRG field -> PRGB0=0", i_(interp.vars["PRGB0"]), 0)
+check("GxROM $01: PRGB1=1", i_(interp.vars["PRGB1"]), 1)
+check("GxROM $01: CHR field -> CHRB0=2", i_(interp.vars["CHRB0"]), 2)
+check("GxROM $01: CHRB1=3", i_(interp.vars["CHRB1"]), 3)
+check("GxROM $01: bus_read $8000 reads PRG 32K bank 0", bus_read(interp, 0x8000), 0)
+check("GxROM $01: ppu_read $0000 reads CHR 8K bank 1", ppu_read(interp, 0x0000), 2)
 
 print("\n%s" % ("ALL MAPPER CHECKS PASSED" if not FAILURES else "FAILURES: %r" % FAILURES))
 sys.exit(1 if FAILURES else 0)

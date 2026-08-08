@@ -280,10 +280,23 @@ def phase2_bus(e):
         # 16K banks and an 8K CHR bank is two consecutive 4K banks (the same
         # trick MMC1's 32K PRG mode already uses in mmc1_apply).
         with e.IF(b, e.EQ(e.V("MAPPER"), 66)) as c:
-            e.setv(c, "U1", e.MOD(e.ARG("v"), 4))              # PRG bank (bits 0-1)
+            # Register layout per the NESdev GxROM spec:
+            #     7  bit  0
+            #     ---- ----
+            #     xxPP xxCC
+            #       ||   ++- 8K CHR bank  (bits 1-0)
+            #       ++------ 32K PRG bank (bits 5-4)
+            # NOTE: PRG is the HIGH nibble field and CHR the LOW one -- the
+            # reverse of the intuitive reading, and the reverse of what this
+            # was originally implemented as. Getting it backwards pairs a
+            # game's code bank with the *other* game's tileset on multicarts
+            # like SMB+Duck Hunt, which renders the right tilemap with the
+            # wrong graphics ("wrong items displayed"). Caught by tracing
+            # real mapper writes ($8002=$11, $BF02=$10) against real output.
+            e.setv(c, "U1", e.MOD(e.IDIV(e.ARG("v"), 16), 4))  # PRG bank (bits 5-4)
             e.setv(c, "PRGB0", e.MUL(e.V("U1"), 2))
             e.setv(c, "PRGB1", e.ADD(e.V("PRGB0"), 1))
-            e.setv(c, "U2", e.MOD(e.IDIV(e.ARG("v"), 16), 4))  # CHR bank (bits 4-5)
+            e.setv(c, "U2", e.MOD(e.ARG("v"), 4))              # CHR bank (bits 1-0)
             e.setv(c, "CHRB0", e.MUL(e.V("U2"), 2))
             e.setv(c, "CHRB1", e.ADD(e.V("CHRB0"), 1))
         # MMC1 (1)

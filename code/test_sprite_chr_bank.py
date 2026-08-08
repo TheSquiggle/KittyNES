@@ -137,9 +137,13 @@ OAM2[3] = 20
 interp2.lists["OAM"] = OAM2
 
 for chrbank_8k in range(NBANK4K // 2):
-    # select this 8K CHR bank via the real GxROM register write (bits4-5),
-    # same mechanism SMB+Duck Hunt itself uses at runtime
-    reg_value = chrbank_8k << 4
+    # Select this 8K CHR bank via the real GxROM register write. Per the
+    # NESdev spec the register is `xxPP xxCC` -- CHR is the LOW field
+    # (bits 1-0), PRG the HIGH field (bits 5-4). This test originally wrote
+    # the bank into bits 5-4, matching an implementation that had the two
+    # fields swapped; both were wrong together, so the suite passed while
+    # real ROMs rendered the wrong tileset. See PROGRESS_LOG.md.
+    reg_value = chrbank_8k & 0x03
     bus_write(interp2, 0x8000, reg_value)
 
     expected_sub_bank0 = chrbank_8k * 2       # CHRB0 after this select

@@ -893,6 +893,112 @@ specifically at run boundaries.
 Reran the full existing suite (250+ checks across every prior phase) —
 no regressions from the interp.py pen-tracking additions.
 
+## 2026-08-01 — Sprite bug, round 4: CPU-side OAM/mapper-register write path (also clean)
+
+Four rounds of PPU/rendering-side testing (positional/scrolling, tile-
+identity/CHR-bank-switching, palette/color resolution, pen-flush drawing)
+all came back clean. This round audited the CPU-side path that writes
+values INTO OAM and mapper registers in the first place, before rendering
+ever sees them — a corruption here would produce the identical symptom
+despite provably-correct rendering math.
+
+New `code/test_cpu_oam_writes.py` (18 checks): a realistic $2003 (OAMADDR)
++ $2004 (OAMDATA) write sequence (set address, write 4 consecutive bytes
+as a game writing one sprite's Y/tile/attr/X would), confirming each byte
+lands at the right index, OAMADDR auto-increments correctly, wraparound at
+256 works, neighboring OAM bytes are untouched, and that reading $2004
+reflects the current OAMADDR without side effects (doesn't itself
+increment). Separately, $4014 (OAM DMA) source-address computation
+(`source = written_value * 256`) tested across 4 different source pages
+(0x00, 0x02, 0x07 from RAM; 0xFF from PRG-ROM space, to make sure the byte-
+value-to-address multiply doesn't only happen to work for low pages),
+each with a full 256-byte position-dependent pattern to catch any
+off-by-one or wrong-page-base bug. **All 18 checks pass — the CPU-side
+write path is also correct.**
+
+Also ran the real ROM further (150 scanline-frames) and dumped: (a) every
+mapper-register bank-select value the ROM's own code actually wrote (via
+tracking `PRGB0`/`CHRB0` changes over time) — small integers within the
+ROM's real `PRGBANKS=4`/`CHRBANKS=2` range at every observed change, no
+garbage/out-of-range values; (b) all 64 real OAM entries at frame 150,
+checked for Y/tile/X being outside 0-255, and attribute bytes having any
+of the 3 documented-unused bits (2-4) set — [results pending / see next
+entry once the run completes].
+
 ---
 
 *(Log continues as phases complete — check back for updates.)*
+
+---
+
+## 2026-08-08 — Real-ROM rendering bug FOUND AND FIXED: mapper 66 PRG/CHR bit fields were swapped
+
+**Symptom** (user-reported, with screenshot): SMB+Duck Hunt rendered a
+recognizable-but-wrong screen — correct tile *shapes* in a plausible layout,
+but wrong graphics ("the spritesheet doesn't get correctly rendered, so the
+wrong items are displayed"), a garbled brick pyramid, and a Goomba as a flat
+black block.
+
+**Why four prior rounds of testing missed it.** Rounds 1–4 audited
+positional/scrolling math, tile-identity/CHR-bank fetch, palette/attribute
+resolution, and the Pen-flush drawing algorithm — all came back clean,
+because none of them was wrong. The defect was one layer up, in *which bank*
+the mapper selected.
+
+**How it was actually found.** Instead of writing more targeted unit tests,
+the framebuffer was rendered to PNG directly from Python (`code/dump_frames.py`)
+and compared against the user's screenshot: they matched exactly, proving the
+bug was in emulation logic, not in Scratch/TurboWarp's pen renderer (the
+leading prior hypothesis — now disproven). Rendering the nametables directly
+from VRAM (`code/dump_vram.py`), bypassing the whole scroll/fetch pipeline,
+reproduced the same wrong image — proving VRAM content itself was wrong and
+exonerating the entire render path. Finally, tracing every `mapper_write` the
+real ROM performs (`code/trace_mapper.py`) showed only **two** writes in 40
+frames, leaving PRG bank 0 paired with CHR bank 1 — a code-bank/tileset
+mismatch on a 2-in-1 cart, i.e. one game's tilemap drawn with the other
+game's graphics.
+
+**Root cause.** The GxROM (mapper 66) bank-select register is, per the
+NESdev spec:
+
+```
+7  bit  0
+---- ----
+xxPP xxCC
+  ||   ++- 8K CHR bank  (bits 1-0)
+  ++------ 32K PRG bank (bits 5-4)
+```
+
+PRG is the **high** field and CHR the **low** field. The implementation had
+them swapped (PRG from bits 1-0, CHR from bits 5-4). This originated in the
+task description given to the implementing agent, which stated the layout
+backwards; the agent implemented the spec it was handed, and the tests were
+written from that same wrong spec.
+
+**Why the 16-check mapper-66 suite passed anyway.** Every check used the
+register value `$11` — which is *symmetric* (PRG=1, CHR=1 under either field
+order) and therefore structurally incapable of distinguishing the two
+readings. A classic degenerate-test-value blind spot.
+
+**Fix.** Swapped the two field extractions in `build_core.py`'s mapper-66
+branch of `mapper_write`. After the fix the same ROM runs from PRG bank 1 and
+actively toggles CHR banks twice per frame (a real mid-frame tileset switch),
+versus only 2 mapper writes total before — confirming the CPU had previously
+been executing the wrong PRG bank entirely.
+
+**Regression protection added.** `test_mappers.py` gained asymmetric checks
+using `$10` and `$01` (mirror-image values that fail loudly if the field
+order is ever flipped back), and `test_sprite_chr_bank.py`'s bank-select
+writes were corrected from `chrbank << 4` to `chrbank & 0x03`. Full suite
+green: CPU 36, mappers (incl. 12 new asymmetric), PPU bg 11, sprites 22+25,
+sprite/CHR-bank 28, palette 40, loader 22, main loop 15, CPU OAM writes 18.
+
+**New diagnostic tooling** (kept, genuinely reusable): `code/dump_frames.py`
+(framebuffer → PNG per frame), `code/dump_vram.py` (direct nametable render,
+bypassing the block-graph render path), `code/trace_mapper.py` (logs every
+mapper register write with decoded fields and resulting bank state).
+
+**Note:** `FB` is currently the name of *both* a variable (the CPU B flag)
+and a list (the framebuffer). Scratch keeps variable and list namespaces
+separate so this is not presently a defect, but it is an accident waiting to
+happen and should be renamed.
