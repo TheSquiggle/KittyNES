@@ -77,6 +77,166 @@ def _preload(e, s, names):
     s.stack("sound_stopallsounds")
 
 
+NOISE_PERIODS = [4, 8, 16, 32, 64, 96, 128, 160,
+                 202, 254, 380, 508, 762, 1016, 2034, 4068]
+
+# Channel indices in the shared APU_* lists (1-based, Scratch style).
+CH_PULSE1, CH_PULSE2, CH_TRIANGLE, CH_NOISE = 1, 2, 3, 4
+
+
+def _pitch_expr(e, hz_reporter):
+    """120 * log2(hz / BASE_HZ), via ln since Scratch has no log2."""
+    lnr = e._op("operator_mathop", NUM=e.DIVR(hz_reporter, BASE_HZ),
+                fields={"OPERATOR": ["ln"]})
+    ln2 = e._op("operator_mathop", NUM=2, fields={"OPERATOR": ["ln"]})
+    return e.MUL(e.DIVR(Reporter(lnr.block_id), Reporter(ln2.block_id)), 120)
+
+
+def build_apu(proj, shared=None):
+    """Add the APU channel sprites to `proj`.
+
+    Returns a dict of the broadcast ids the NES core should fire when the CPU
+    writes $4000-$4013:
+        {"update": {ch: bcast_id}, "restart": {ch: bcast_id}, "stop": id}
+
+    Cross-sprite state lives in Stage-global lists (this is the one place
+    `glob=True` is warranted -- the channel sprites must read values the NES
+    sprite writes):
+        APU_FREQ[ch]  target frequency in Hz (0 = silent)
+        APU_VOL[ch]   0-100 channel volume
+        APU_DUTY[ch]  pulse duty index 0-3 (pulse channels only)
+        APU_NOISEIDX  which noise asset (1-32) the noise channel should play
+
+    Why both an "update" and a "restart" broadcast per channel: `play sound
+    until done` blocks for the whole multi-second asset, so a plain forever
+    loop could not react to a register write mid-sample. Broadcast hats run as
+    SEPARATE concurrent scripts, so pitch/volume changes apply immediately
+    while the sample keeps sounding. Changing which *asset* plays (noise
+    period, pulse duty) can't be done mid-sample, so that path deletes the
+    clone and makes a new one instead.
+    """
+    chans = [
+        ("APU Pulse 1", CH_PULSE1, ["pulse%d" % i for i in range(4)]),
+        ("APU Pulse 2", CH_PULSE2, ["pulse%d" % i for i in range(4)]),
+        ("APU Triangle", CH_TRIANGLE, ["triangle"]),
+        ("APU Noise", CH_NOISE, ["noise%d_%d" % (m, p)
+                                 for m in (0, 1) for p in NOISE_PERIODS]),
+    ]
+
+    bc_update = {ch: proj.add_broadcast("apu_update_%d" % ch) for _, ch, _ in chans}
+    bc_restart = {ch: proj.add_broadcast("apu_restart_%d" % ch) for _, ch, _ in chans}
+    bc_stop = proj.add_broadcast("apu_stop_all")
+
+    noise_names = ["noise%d_%d" % (m, p) for m in (0, 1) for p in NOISE_PERIODS]
+    # Shared Stage-globals are created ONCE and then injected into each
+    # sprite's name->id map. Calling e.lst(..., glob=True) per sprite would
+    # mint a SEPARATE list per sprite that merely shares a display name, so
+    # the channels would never see what the NES core writes.
+    shared_lists = {}
+    shared_vars = {}
+
+    def _share(e):
+        for nm, items in (("APU_FREQ", [0, 0, 0, 0]), ("APU_VOL", [0, 0, 0, 0]),
+                          ("APU_DUTY", [0, 0]), ("APU_NOISENAMES", noise_names)):
+            if nm not in shared_lists:
+                shared_lists[nm] = e.lst(nm, items, glob=True)
+            else:
+                e.lists[nm] = shared_lists[nm]
+                e._global_lists.add(nm)
+        if "APU_NOISEIDX" not in shared_vars:
+            shared_vars["APU_NOISEIDX"] = e.var("APU_NOISEIDX", 1, glob=True)
+        else:
+            e.vars["APU_NOISEIDX"] = shared_vars["APU_NOISEIDX"]
+            e._global_vars.add("APU_NOISEIDX")
+
+    for sprite_name, ch, assets in chans:
+        e = Emu(sprite_name, proj=proj)
+        _share(e)
+        # Distinguishes the sounding clone from the template sprite, so a
+        # restart broadcast can mean "die" to the clone and "spawn" to the
+        # template. Sprite-local: each channel tracks its own.
+        e.var("is_clone", 0)
+
+        for nm in assets:
+            add_wav(proj, e.t, os.path.join(ASSET_DIR, nm + ".wav"), nm)
+
+        # ---- green flag: preload every asset, then start sounding ----
+        s = e.script("event_whenflagclicked")
+        e.setv(s, "is_clone", 0)
+        _preload(e, s, assets)
+        s.stack("control_create_clone_of",
+                CLONE_OPTION=Reporter(
+                    e._op("control_create_clone_of_menu",
+                          fields={"CLONE_OPTION": ["_myself_"]}).block_id))
+        s.finalize()
+
+        # ---- the sounding clone ----
+        if ch == CH_NOISE:
+            # Noise is selected by ASSET, not by pitch -- the LFSR pattern
+            # differs per period, so pitch-shifting one asset would be wrong.
+            sound_sel = e.IT("APU_NOISENAMES", e.V("APU_NOISEIDX"))
+        elif ch in (CH_PULSE1, CH_PULSE2):
+            # +1: APU_DUTY holds 0-3, asset names are pulse0..pulse3.
+            sound_sel = e.JOIN("pulse", e.IT("APU_DUTY", ch))
+        else:
+            sound_sel = "triangle"
+
+        s2 = e.script("control_start_as_clone")
+        e.setv(s2, "is_clone", 1)
+        with e.FOREVER(s2) as body:
+            if isinstance(sound_sel, str):
+                menu = e._op("sound_sounds_menu", fields={"SOUND_MENU": [sound_sel]})
+                body.stack("sound_playuntildone", SOUND_MENU=Reporter(menu.block_id))
+            else:
+                # A reporter in SOUND_MENU selects the sound by name at runtime.
+                body.stack("sound_playuntildone", SOUND_MENU=sound_sel)
+        s2.finalize()
+
+        # ---- update hat: applies pitch+volume WITHOUT interrupting playback ----
+        s3 = e.script("event_whenbroadcastreceived",
+                      fields={"BROADCAST_OPTION": ["apu_update_%d" % ch, bc_update[ch]]})
+        if ch != CH_NOISE:
+            s3.stack("sound_seteffectto",
+                     VALUE=_pitch_expr(e, e.IT("APU_FREQ", ch)),
+                     fields={"EFFECT": ["PITCH"]})
+        s3.stack("sound_setvolumeto", VOLUME=e.IT("APU_VOL", ch))
+        s3.finalize()
+
+        # ---- restart hat: swap which asset is playing (duty/noise period) ----
+        s4 = e.script("event_whenbroadcastreceived",
+                      fields={"BROADCAST_OPTION": ["apu_restart_%d" % ch, bc_restart[ch]]})
+        # Both the template sprite and its clones receive this. The clone
+        # kills itself; the template spawns a fresh one -- net effect is a
+        # clean retrigger with the newly-selected asset.
+        ctx = e.IFELSE(s4, e.EQ(e.V("is_clone"), 1))
+        with ctx as b:
+            b.stack("control_delete_this_clone")
+        with ctx.substack2() as b:
+            b.stack("control_create_clone_of",
+                    CLONE_OPTION=Reporter(
+                        e._op("control_create_clone_of_menu",
+                              fields={"CLONE_OPTION": ["_myself_"]}).block_id))
+        s4.finalize()
+
+        # ---- stop-all hat ----
+        s5 = e.script("event_whenbroadcastreceived",
+                      fields={"BROADCAST_OPTION": ["apu_stop_all", bc_stop]})
+        s5.stack("sound_stopallsounds")
+        s5.finalize()
+
+    return {"update": bc_update, "restart": bc_restart, "stop": bc_stop}
+
+
+def build_apu_demo(out_path=r"D:\KittyNES\progress\apu_full_demo.sb3"):
+    """All four channel sprites in one project, wired but driven by nothing --
+    proves the structure builds and validates before it's hooked to the CPU."""
+    e = Emu("Driver")
+    info = build_apu(e.proj)
+    e.save(out_path)
+    print("saved", out_path, "broadcasts:", sorted(info["update"]))
+    return out_path
+
+
 def build_demo(out_path=r"D:\KittyNES\progress\apu_demo.sb3"):
     """Standalone audible proof of the technique: hold one sustained pulse
     sample looping and step its PITCH through a scale. If this sounds like
