@@ -78,7 +78,7 @@ rom += header
 rom += bytes(full_prg)
 rom += bytes([0] * 8192)  # blank CHR
 
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)

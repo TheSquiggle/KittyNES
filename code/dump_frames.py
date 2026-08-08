@@ -61,7 +61,7 @@ def to_rgb(val):
     return ((v >> 16) & 255, (v >> 8) & 255, v & 255)
 
 
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)

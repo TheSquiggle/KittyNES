@@ -46,7 +46,7 @@ def main():
     import ines_loader as INES
 
     print(f"Building with ROM: {nes_path}")
-    e = Emu("CPU")
+    e = Emu("NES")
     BC.declare_state(e)
     BC.phase1_tables(e)
     BC.phase2_bus(e)

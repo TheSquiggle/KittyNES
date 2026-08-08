@@ -1002,3 +1002,42 @@ mapper register write with decoded fields and resulting bank state).
 and a list (the framebuffer). Scratch keeps variable and list namespaces
 separate so this is not presently a defect, but it is an accident waiting to
 happen and should be renamed.
+
+---
+
+## 2026-08-08 — Architecture: one sprite = one emulator (multi-console ready)
+
+Goal: make each emulator fully self-contained in a single sprite, so adding a
+second console later is "add a sprite," not "rename every variable."
+
+**Problem.** `Emu.var()`/`Emu.lst()` defaulted to `target=None`, which
+`sb3_builder` interprets as *global* — so all 122 variables and 36 lists lived
+on the Stage. A second console sprite would have collided on every single name.
+
+**Change.** Emulator state is now **sprite-local by default**, with an explicit
+`glob=True` escape hatch reserved for state that genuinely must cross sprite
+boundaries (the APU channel sprites will need this — see
+`research/audio_reference_findings.md`). Supporting changes:
+
+- `Emu.__init__(sprite_name, proj=None)` — passing an existing `Project` adds
+  the console as an additional sprite instead of starting a new project.
+- `Emu._var_target()` / `_list_target()` resolve where a name actually lives.
+- New `Emu.set_var_value(name, value)` replaces the hardcoded
+  `e.proj.stage.variables[...]` writes in `ines_loader.py`, which would
+  otherwise have written initial ROM/mapper config to the wrong target.
+- Emulator sprite renamed `CPU` → `NES` (it is the whole console, not just the
+  CPU, and the name should say which console it is).
+
+**Verification.** New `code/test_multiconsole.py` builds **two complete,
+independent NES cores as two sprites in one project** and asserts: the Stage
+holds zero emulator variables/lists; both sprites carry full block graphs and
+their own local state; both use the *same* variable names but share **no**
+variable or list ids; and each has its own distinct 2KB RAM. All pass. Artifact:
+`progress/multiconsole_demo.sb3` (validates clean).
+
+Full regression suite re-run green after the refactor (CPU 36, mappers, PPU bg
+11, sprites 22+25, sprite/CHR-bank 28, palette 40, pen flush, loader 22, main
+loop 15, CPU OAM writes 18, multi-console 14).
+
+This mirrors the reference emulator's structure, where the NES sprite holds 254
+local variables / 55 local lists and only shared APU state sits on the Stage.

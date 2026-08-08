@@ -15,7 +15,7 @@ from interp import Interp
 rom = sys.argv[1]
 frames = int(sys.argv[2]) if len(sys.argv) > 2 else 40
 
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)

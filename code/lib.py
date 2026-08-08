@@ -15,29 +15,58 @@ from sb3_builder import (  # noqa
 class Emu:
     """Holds the project + one sprite, and name->id maps for vars/lists/procs."""
 
-    def __init__(self, sprite_name="NES"):
-        self.proj = Project()
+    def __init__(self, sprite_name="NES", proj=None):
+        """proj=None creates a fresh Project. Pass an EXISTING Project to add
+        this console as an additional sprite alongside others -- because all
+        state is sprite-local (see var/lst below), two consoles can coexist in
+        one project using identical internal names with no collisions. That's
+        what makes 'one sprite = one emulator' the unit of composition."""
+        self.proj = proj if proj is not None else Project()
         self.t = self.proj.add_sprite(sprite_name)
         self.vars = {}
         self.lists = {}
         self.procs = {}
+        self._global_vars = set()
+        self._global_lists = set()
         self._px = 0
         self._py = 0
 
     # ---- declarations ------------------------------------------------
-    def var(self, name, value=0):
+    # Emulator state is SPRITE-LOCAL by default ("for this sprite only"), so
+    # the whole console lives self-contained in one sprite and a second
+    # console sprite can reuse the same names without colliding. Pass
+    # glob=True only for state that genuinely must cross sprite boundaries
+    # (e.g. APU channel sprites reading per-channel frequency/volume).
+    def var(self, name, value=0, glob=False):
         if name not in self.vars:
-            self.vars[name] = self.proj.add_variable(name, value)
+            self.vars[name] = self.proj.add_variable(
+                name, value, target=None if glob else self.t)
+            if glob:
+                self._global_vars.add(name)
         return self.vars[name]
 
-    def lst(self, name, items=None):
+    def lst(self, name, items=None, glob=False):
         if name not in self.lists:
-            self.lists[name] = self.proj.add_list(name, list(items or []))
+            self.lists[name] = self.proj.add_list(
+                name, list(items or []), target=None if glob else self.t)
+            if glob:
+                self._global_lists.add(name)
         return self.lists[name]
+
+    def _list_target(self, name):
+        return self.proj.stage if name in self._global_lists else self.t
+
+    def _var_target(self, name):
+        return self.proj.stage if name in self._global_vars else self.t
 
     def set_list_items(self, name, items):
         lid = self.lists[name]
-        self.proj.stage.lists[lid] = [name, list(items)]
+        self._list_target(name).lists[lid] = [name, list(items)]
+
+    def set_var_value(self, name, value):
+        """Set a variable's INITIAL (saved) value, wherever it actually lives."""
+        vid = self.var(name)
+        self._var_target(name).variables[vid][1] = value
 
     # ---- reporters ---------------------------------------------------
     def V(self, name):

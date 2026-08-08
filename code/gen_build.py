@@ -6,7 +6,7 @@ sys.path.insert(0, r"D:\KittyNES\code")
 from lib import Emu
 import build_core as BC
 
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)

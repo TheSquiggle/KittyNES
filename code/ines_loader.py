@@ -157,11 +157,11 @@ def load_rom_into_emu(e, nes_bytes):
     prg_banks_16k = max(parsed["prg_banks_16k"], 1)
     chr_banks_8k = max(parsed["chr_banks_8k"], 1)
 
-    e.proj.stage.variables[e.var("MAPPER")][1] = parsed["mapper"]
-    e.proj.stage.variables[e.var("MIRROR")][1] = parsed["mirror"]
-    e.proj.stage.variables[e.var("PRGBANKS")][1] = prg_banks_16k
-    e.proj.stage.variables[e.var("CHRBANKS")][1] = chr_banks_8k
-    e.proj.stage.variables[e.var("CHRRAM")][1] = chr_ram_flag
+    e.set_var_value("MAPPER", parsed["mapper"])
+    e.set_var_value("MIRROR", parsed["mirror"])
+    e.set_var_value("PRGBANKS", prg_banks_16k)
+    e.set_var_value("CHRBANKS", chr_banks_8k)
+    e.set_var_value("CHRRAM", chr_ram_flag)
     if parsed["mapper"] == 66:
         # GxROM/MHROM: the PRG/CHR windows switch as whole 32K/8K units (one
         # register controls both), so there's no "fixed last bank" the way
@@ -170,14 +170,14 @@ def load_rom_into_emu(e, nes_bytes):
         # real hardware's typical power-on register state and what the
         # cartridge's own reset code will immediately overwrite via its
         # first $8000-$FFFF write anyway.
-        e.proj.stage.variables[e.var("PRGB0")][1] = 0
-        e.proj.stage.variables[e.var("PRGB1")][1] = 1
-        e.proj.stage.variables[e.var("CHRB0")][1] = 0
-        e.proj.stage.variables[e.var("CHRB1")][1] = 1 if chr_banks_8k * 2 > 1 else 0
+        e.set_var_value("PRGB0", 0)
+        e.set_var_value("PRGB1", 1)
+        e.set_var_value("CHRB0", 0)
+        e.set_var_value("CHRB1", 1 if chr_banks_8k * 2 > 1 else 0)
     else:
-        e.proj.stage.variables[e.var("PRGB0")][1] = 0
-        e.proj.stage.variables[e.var("PRGB1")][1] = prg_banks_16k - 1
-        e.proj.stage.variables[e.var("CHRB0")][1] = 0
-        e.proj.stage.variables[e.var("CHRB1")][1] = 1 if chr_banks_8k * 2 > 1 else 0
+        e.set_var_value("PRGB0", 0)
+        e.set_var_value("PRGB1", prg_banks_16k - 1)
+        e.set_var_value("CHRB0", 0)
+        e.set_var_value("CHRB1", 1 if chr_banks_8k * 2 > 1 else 0)
 
     return parsed

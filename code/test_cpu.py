@@ -214,7 +214,7 @@ prog = asm.assemble()
 print("program length:", len(prog), "bytes, checks:", cp)
 
 # ---- build the emulator ----
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)

@@ -91,7 +91,7 @@ def chr_fill(bank, off):
 rom = build_synthetic_nes(prg_banks=4, chr_banks=2, mapper=0, mirror=0,
                            prg_fill=prg_fill, chr_fill=chr_fill)
 
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)

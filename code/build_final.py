@@ -20,7 +20,7 @@ import ines_loader as INES
 nes_path = sys.argv[1] if len(sys.argv) > 1 else None
 out_path = sys.argv[2] if len(sys.argv) > 2 else r"D:\KittyNES\progress\nes_emulator.sb3"
 
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)

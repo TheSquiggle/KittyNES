@@ -42,7 +42,7 @@ def i_(x):
 
 
 def fresh():
-    e = Emu("CPU")
+    e = Emu("NES")
     BC.declare_state(e)
     BC.phase1_tables(e)
     BC.phase2_bus(e)

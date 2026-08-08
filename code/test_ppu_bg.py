@@ -24,7 +24,7 @@ def i_(x):
     return int(x) if isinstance(x, (int, float)) else x
 
 
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)

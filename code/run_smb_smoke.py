@@ -17,7 +17,7 @@ ROM_PATH = r"C:\Users\silas\Documents\ROMS\NES\Super Mario Bros. + Duck Hunt (US
 STEPS = int(sys.argv[1]) if len(sys.argv) > 1 else 50_000_000
 REPORT_EVERY_SCANLINES = 262  # once per frame
 
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)

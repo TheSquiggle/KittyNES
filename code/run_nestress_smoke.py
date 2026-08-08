@@ -12,7 +12,7 @@ import build_core as BC
 import ines_loader as INES
 from interp import Interp
 
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)

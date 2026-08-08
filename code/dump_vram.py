@@ -38,7 +38,7 @@ def write_png(path, w, h, rows):
         f.write(png)
 
 
-e = Emu("CPU")
+e = Emu("NES")
 BC.declare_state(e)
 BC.phase1_tables(e)
 BC.phase2_bus(e)
