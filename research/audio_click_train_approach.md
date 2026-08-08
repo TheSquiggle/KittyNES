@@ -373,3 +373,18 @@ confirmed correctly applied (ruling out that specific bug), and the most
 plausible remaining explanation is a hard limitation this project cannot
 fix at the Scratch-block level. The v4 listening test is the next concrete
 step to confirm or rule that out.
+
+---
+
+## RESOLVED (2026-08-08): superseded by the sustained-sample + pitch approach
+
+A working reference emulator confirmed the hypothesis at the end of this
+document was correct — the click-train is capped by a fixed per-play
+audio-engine startup latency that no Scratch-level change (warp mode included)
+can remove. The fix is not to re-trigger faster but to **stop re-triggering**:
+play one long sustained sample and set its PITCH. See
+`research/audio_reference_findings.md` for the full architecture, and
+`code/audio_assets.py` for the asset generator built from it.
+
+The prototypes (`progress/audio_prototype*.sb3`) are retained as a documented
+negative result.
