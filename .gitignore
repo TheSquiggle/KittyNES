@@ -11,3 +11,11 @@ progress/Famidash - Huge Man v1.2.8.sb3
 
 # Framebuffer diagnostic dumps (regenerable via code/dump_frames.py)
 progress/framedumps/
+
+# Commercial ROM -- must never be committed to a public repo.
+test_roms/Super Mario Bros. + Duck Hunt (USA).nes
+
+# Homebrew ROM kept locally for testing. Not committed by default: it's a
+# 2.3MB binary and its redistribution terms are the owner's call, not mine.
+# Remove this line if you want it published with the repo.
+test_roms/Famidash - Huge Man v1.2.8.nes
