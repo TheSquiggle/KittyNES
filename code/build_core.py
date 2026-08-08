@@ -50,8 +50,11 @@ def declare_state(e):
               "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9",
               "U1", "U2", "U3", "U4", "U5", "U6", "U7", "U8", "U9",
               "MAPPER", "PRGBANKS", "CHRBANKS", "MIRROR", "CHRRAM",
-              "PRGB0", "PRGB1", "CHRB0", "CHRB1",
+              "BK1", "MR1", "MR2",
               "M1_SR", "M1_CNT", "M1_CTRL", "M1_CHR0", "M1_CHR1", "M1_PRG",
+              "M3_SEL", "M3_PRGMODE", "M3_CHRINV", "M3_PRGRAMPROT",
+              "M3_IRQLATCH", "M3_IRQCNT", "M3_IRQRELOAD", "M3_IRQEN",
+              "M3_T1", "M3_T2", "M3_T3", "M3_T4",
               "P_CTRL", "P_MASK", "P_STATUS", "P_OAMADDR", "P_V", "P_T", "P_X",
               "P_W", "P_BUF", "NMI_PENDING", "IRQ_PENDING",
               "CTRL_STROBE", "CTRL_SHIFT", "CTRL_STATE",
@@ -65,7 +68,20 @@ def declare_state(e):
               "SC_T1", "SC_T2", "SC_T3", "SC_T4", "SC_TILECOL", "SC_FINEY"]:
         e.var(v)
     e.lst("RAM", [0] * 2048)
-    e.lst("VRAM", [0] * 2048)
+    # 4KB of nametable VRAM: 2KB is all a normal (H/V/single-screen) board can
+    # address, but four-screen boards (flags6 bit 3, e.g. mapper-4 carts with
+    # extra on-cart VRAM) give each of the four logical nametables its own
+    # physical page. nt_index maps into this; modes 0-3 only ever use the low 2KB.
+    e.lst("VRAM", [0] * 4096)
+    # ---- fine-grained bank windows, used by EVERY mapper ----------------
+    # P8: four 8K PRG windows ($8000/$A000/$C000/$E000), values are 8K bank #s.
+    # C1: eight 1K CHR windows ($0000..$1C00),          values are 1K bank #s.
+    # Coarser boards just express their windows in these units (a 16K PRG bank
+    # is two consecutive 8K banks, an 8K CHR bank is eight consecutive 1K
+    # banks, ...), so no mapper ever needs a bus rework again.
+    e.lst("P8", [0, 1, 2, 3])
+    e.lst("C1", list(range(8)))
+    e.lst("M3R", [0] * 8)        # MMC3 bank registers R0-R7
     e.lst("PAL", [0] * 32)
     e.lst("OAM", [0] * 256)
     e.lst("PRG", [0])
