@@ -21,8 +21,11 @@ from lib import Emu, Reporter
 
 ASSET_DIR = r"D:\KittyNES\assets\audio"
 
-# Must match code/audio_assets.py -- pitch 0 reproduces exactly this frequency.
-BASE_HZ = 48000 / 109.0
+# Single source of truth: BASE_HZ is the frequency the pulse/triangle assets
+# were actually rendered at, so pitch effect 0 reproduces it exactly. Importing
+# it (rather than re-deriving it here) means regenerating the assets at a
+# different rate/period can't silently put every note out of tune.
+from audio_assets import BASE_HZ  # noqa: E402
 
 
 def wav_info(path):

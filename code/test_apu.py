@@ -93,5 +93,43 @@ for ch in (1, 2, 3, 4):
 check("broadcast apu_stop_all exists", "apu_stop_all" in bnames, True)
 check("build_apu returned update ids for 4 channels", sorted(info["update"]), [1, 2, 3, 4])
 
+# ---- 6) pitch math is consistent with the assets actually generated -----
+# BASE_HZ must be the frequency the assets were rendered at, or every note is
+# transposed. These two modules must never drift apart.
+import math
+import audio_assets
+
+check("apu_build uses the generator's BASE_HZ", apu_build.BASE_HZ, audio_assets.BASE_HZ)
+check("BASE_HZ matches an exact integer samples-per-cycle asset",
+      round(audio_assets.SR / audio_assets.SAMPLES_PER_CYCLE, 9),
+      round(audio_assets.BASE_HZ, 9))
+
+
+def pitch_for(hz):
+    return 120.0 * math.log(hz / apu_build.BASE_HZ) / math.log(2)
+
+
+check("pitch 0 reproduces the base frequency", round(pitch_for(apu_build.BASE_HZ), 9), 0.0)
+check("one octave up = +120 pitch units",
+      round(pitch_for(apu_build.BASE_HZ * 2), 6), 120.0)
+check("one octave down = -120 pitch units",
+      round(pitch_for(apu_build.BASE_HZ / 2), 6), -120.0)
+check("one semitone up = +10 pitch units",
+      round(pitch_for(apu_build.BASE_HZ * 2 ** (1 / 12.0)), 6), 10.0)
+
+# A real NES pulse period should land on a sane pitch: f = fCPU/(16*(t+1)).
+t = 253
+hz = 1789773.0 / (16 * (t + 1))
+check("NES timer t=253 is within Scratch's usable pitch range",
+      -360 < pitch_for(hz) < 360, True)
+
+# Assets must actually exist on disk for a build to succeed.
+import os
+missing = [n for n in (["pulse%d" % i for i in range(4)] + ["triangle"] +
+                       ["noise%d_%d" % (m, p) for m in (0, 1)
+                        for p in apu_build.NOISE_PERIODS])
+           if not os.path.exists(os.path.join(apu_build.ASSET_DIR, n + ".wav"))]
+check("all 37 APU assets present on disk", missing, [])
+
 print("\n%s" % ("ALL APU CHECKS PASSED" if not FAILURES else "FAILURES: %r" % FAILURES))
 sys.exit(1 if FAILURES else 0)
