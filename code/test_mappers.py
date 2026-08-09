@@ -3,7 +3,7 @@ code/test_cpu.py -- call the actual generated custom-block procs (via
 interp.py, which walks the real block graph) with controlled PRG/CHR list
 contents and check the bus reflects the expected bank after a mapper write.
 
-Covers: NROM (implicit baseline via mapper_read's linear PRGB0/PRGB1 math,
+Covers: NROM (implicit baseline via mapper_read's linear P8-window math,
 already exercised by test_cpu.py's reset-vector fetch), UxROM (mapper 2),
 CNROM (mapper 3), and MMC1 (mapper 1, including the 5-write serial-shift
 protocol and the reset-via-bit7 case).
@@ -37,6 +37,16 @@ def i_(x):
     return int(x) if isinstance(x, (int, float)) else x
 
 
+def p8(interp):
+    """The four 8K PRG window registers, as ints."""
+    return [int(v) for v in interp.lists["P8"]]
+
+
+def c1(interp):
+    """The eight 1K CHR window registers, as ints."""
+    return [int(v) for v in interp.lists["C1"]]
+
+
 def bus_read(interp, a):
     interp.call_proc_by_name("bus_read %s", {"a": a})
     return i_(interp.vars["RESULT"])
@@ -54,9 +64,9 @@ def ppu_read(interp, a):
 # =====================================================================
 # UxROM (mapper 2): 8x 16K PRG banks, each byte = bank id. $8000-$BFFF is
 # switchable via bus_write to any $8000-$FFFF address (low bits = bank #);
-# $C000-$FFFF stays fixed to whatever PRGB1 was set to (a real loader fixes
-# it to the last bank; we set that up explicitly here since Phase 7 doesn't
-# exist yet).
+# $C000-$FFFF stays fixed to the LAST 16K bank. Banks are expressed through
+# the fine-grained P8 registers (four 8K windows), so a 16K bank N occupies
+# P8 windows [2N, 2N+1].)
 # =====================================================================
 print("\n--- UxROM (mapper 2) ---")
 interp = fresh_interp()
@@ -68,8 +78,7 @@ for bank in range(NBANKS):
 interp.lists["PRG"] = PRG
 interp.vars["MAPPER"] = 2
 interp.vars["PRGBANKS"] = NBANKS
-interp.vars["PRGB0"] = 0
-interp.vars["PRGB1"] = NBANKS - 1  # fixed last bank, as a real loader would set
+interp.lists["P8"] = [0, 1, (NBANKS - 1) * 2, (NBANKS - 1) * 2 + 1]  # as a loader sets
 
 check("UxROM initial $8000 bank", bus_read(interp, 0x8000), 0)
 check("UxROM initial $C000 bank (fixed last)", bus_read(interp, 0xC000), NBANKS - 1)
@@ -88,8 +97,8 @@ check("UxROM bank value wraps mod PRGBANKS", bus_read(interp, 0x8000), 99 % NBAN
 
 
 # =====================================================================
-# CNROM (mapper 3): CHR is bank-switched in 8K units (= two 4K CHRB0/CHRB1
-# banks internally). PRG is fixed (CNROM boards are NROM-128/256 for PRG).
+# CNROM (mapper 3): CHR is bank-switched in 8K units (= eight consecutive 1K
+# C1 windows internally). PRG is fixed (CNROM boards are NROM-128/256 for PRG).
 # =====================================================================
 print("\n--- CNROM (mapper 3) ---")
 interp = fresh_interp()
@@ -101,15 +110,13 @@ for bank in range(CHR_BANKS_8K):
 interp.lists["CHR"] = CHR
 interp.vars["MAPPER"] = 3
 interp.vars["CHRBANKS"] = CHR_BANKS_8K
-interp.vars["CHRB0"] = 0
-interp.vars["CHRB1"] = 1
+interp.lists["C1"] = list(range(8))
 interp.vars["CHRRAM"] = 0
 # PRG side doesn't matter for this test; give it something so bus_read for
 # $8000+ doesn't error (mapper_write's PRG-RAM branch below $8000 is separate).
 interp.lists["PRG"] = [0] * 32768
 interp.vars["PRGBANKS"] = 2
-interp.vars["PRGB0"] = 0
-interp.vars["PRGB1"] = 1
+interp.lists["P8"] = [0, 1, 2, 3]
 
 check("CNROM initial CHR $0000 bank", ppu_read(interp, 0x0000), 0)
 check("CNROM initial CHR $1000 bank", ppu_read(interp, 0x1000), 0)
@@ -166,13 +173,11 @@ interp.vars["M1_CHR1"] = 0
 interp.vars["M1_PRG"] = 0
 interp.call_proc_by_name("mmc1_apply")
 
-check("MMC1 power-on PRGB0", i_(interp.vars["PRGB0"]), 0)
-check("MMC1 power-on PRGB1 (fixed last)", i_(interp.vars["PRGB1"]), NPRG16 - 1)
+check("MMC1 power-on $8000 window = 16K bank 0", p8(interp), [0, 1, 30, 31])
 
 # ---- write PRG register (address range 3: $E000-$FFFF) with bank 5 ----
 mmc1_write_serial(interp, 0xE000, 5)
-check("MMC1 PRG-select bank5: PRGB0", i_(interp.vars["PRGB0"]), 5)
-check("MMC1 PRG-select bank5: PRGB1 (still fixed last)", i_(interp.vars["PRGB1"]), NPRG16 - 1)
+check("MMC1 PRG-select bank5: P8 windows", p8(interp), [10, 11, 30, 31])
 check("MMC1 PRG-select bank5: bus_read $8000", bus_read(interp, 0x8000), 5)
 check("MMC1 PRG-select bank5: bus_read $C000 (fixed)", bus_read(interp, 0xC000), NPRG16 - 1)
 
@@ -183,8 +188,8 @@ check("MMC1 CTRL write latched", i_(interp.vars["M1_CTRL"]), 0x1C)
 # ---- select CHR0 = bank 3, CHR1 = bank 6 ----
 mmc1_write_serial(interp, 0xA000, 3)  # CHR0 register (range 1: $A000-$BFFF)
 mmc1_write_serial(interp, 0xC000, 6)  # CHR1 register (range 2: $C000-$DFFF)
-check("MMC1 CHR mode1: CHRB0", i_(interp.vars["CHRB0"]), 3)
-check("MMC1 CHR mode1: CHRB1", i_(interp.vars["CHRB1"]), 6)
+check("MMC1 CHR mode1: C1 windows (4K bank 3 then 4K bank 6)", c1(interp),
+      [12, 13, 14, 15, 24, 25, 26, 27])
 check("MMC1 CHR mode1: ppu_read $0000 (bank3)", ppu_read(interp, 0x0000), 3)
 check("MMC1 CHR mode1: ppu_read $1000 (bank6)", ppu_read(interp, 0x1000), 6)
 
@@ -200,7 +205,7 @@ check("MMC1 bit7-reset: CTRL bits2-3 forced to 11",
 
 # ---- a fresh 5-write sequence after the reset should still work normally ----
 mmc1_write_serial(interp, 0xE000, 9)
-check("MMC1 post-reset PRG-select bank9: PRGB0", i_(interp.vars["PRGB0"]), 9)
+check("MMC1 post-reset PRG-select bank9: $8000 window", p8(interp)[0:2], [18, 19])
 
 
 # =====================================================================
@@ -240,10 +245,8 @@ interp.vars["MAPPER"] = 66
 interp.vars["PRGBANKS"] = NPRG32 * 2  # bus code counts PRGBANKS in 16K units
 interp.vars["CHRBANKS"] = NCHR8       # CHRBANKS is in 8K units (matches CNROM's convention)
 interp.vars["CHRRAM"] = 0
-interp.vars["PRGB0"] = 0
-interp.vars["PRGB1"] = 1
-interp.vars["CHRB0"] = 0
-interp.vars["CHRB1"] = 1
+interp.lists["P8"] = [0, 1, 2, 3]
+interp.lists["C1"] = list(range(8))
 
 check("GxROM initial: bus_read $8000 (bank0)", bus_read(interp, 0x8000), 0)
 check("GxROM initial: bus_read $C000 (still bank0's 2nd 16K half)", bus_read(interp, 0xC000), 1)
@@ -254,41 +257,36 @@ check("GxROM initial: ppu_read $1000 (CHR bank1)", ppu_read(interp, 0x1000), 1)
 # register value = PRG_bits(5-4)=1, CHR_bits(1-0)=1 -> 0b00010001 = 0x11
 # (symmetric value -- passes under either field order, see header note)
 bus_write(interp, 0x8000, 0x11)
-check("GxROM after select: PRGB0", i_(interp.vars["PRGB0"]), 2)
-check("GxROM after select: PRGB1", i_(interp.vars["PRGB1"]), 3)
+check("GxROM after select: P8 windows (32K bank 1 = 8K banks 4-7)", p8(interp), [4, 5, 6, 7])
 check("GxROM after select: bus_read $8000 (bank1's 1st 16K half)", bus_read(interp, 0x8000), 2)
 check("GxROM after select: bus_read $C000 (bank1's 2nd 16K half)", bus_read(interp, 0xC000), 3)
 check("GxROM after select: whole window switched together (no fixed-last-bank)",
       bus_read(interp, 0xFFFF), 3)
-check("GxROM after select: CHRB0", i_(interp.vars["CHRB0"]), 2)
-check("GxROM after select: CHRB1", i_(interp.vars["CHRB1"]), 3)
+check("GxROM after select: C1 windows (8K CHR bank 1 = 1K banks 8-15)", c1(interp),
+      list(range(8, 16)))
 check("GxROM after select: ppu_read $0000 (CHR bank1's 1st 4K half)", ppu_read(interp, 0x0000), 2)
 check("GxROM after select: ppu_read $1000 (CHR bank1's 2nd 4K half)", ppu_read(interp, 0x1000), 3)
 
 # a write to ANY address in $8000-$FFFF (not just $8000) takes effect --
 # hardware doesn't care about the exact address in that range
 bus_write(interp, 0xFFF0, 0x00)  # back to bank 0 for both PRG and CHR
-check("GxROM: write via a different address ($FFF0) still works", i_(interp.vars["PRGB0"]), 0)
-check("GxROM: write via a different address also updates CHR", i_(interp.vars["CHRB0"]), 0)
+check("GxROM: write via a different address ($FFF0) still works", p8(interp), [0, 1, 2, 3])
+check("GxROM: write via a different address also updates CHR", c1(interp), list(range(8)))
 
 # ---- ASYMMETRIC field-order checks (the ones that actually caught the bug) ----
 # $10 = 0b0001_0000 -> PRG field (bits 5-4) = 1, CHR field (bits 1-0) = 0.
-# Under the WRONG (swapped) reading this would give PRGB0=0 / CHRB0=2, so
+# Under the WRONG (swapped) reading this would give PRG 32K bank 0 / CHR 8K bank 2, so
 # these checks fail loudly if the field order is ever flipped back.
 bus_write(interp, 0x8000, 0x10)
-check("GxROM $10: PRG field is bits 5-4 -> PRGB0=2", i_(interp.vars["PRGB0"]), 2)
-check("GxROM $10: PRGB1=3", i_(interp.vars["PRGB1"]), 3)
-check("GxROM $10: CHR field is bits 1-0 -> CHRB0=0", i_(interp.vars["CHRB0"]), 0)
-check("GxROM $10: CHRB1=1", i_(interp.vars["CHRB1"]), 1)
+check("GxROM $10: PRG field is bits 5-4 -> 32K bank 1 (8K banks 4-7)", p8(interp), [4, 5, 6, 7])
+check("GxROM $10: CHR field is bits 1-0 -> 8K bank 0 (1K banks 0-7)", c1(interp), list(range(8)))
 check("GxROM $10: bus_read $8000 reads PRG 32K bank 1", bus_read(interp, 0x8000), 2)
 check("GxROM $10: ppu_read $0000 reads CHR 8K bank 0", ppu_read(interp, 0x0000), 0)
 
 # $01 = 0b0000_0001 -> PRG field = 0, CHR field = 1 (the exact mirror image).
 bus_write(interp, 0x8000, 0x01)
-check("GxROM $01: PRG field -> PRGB0=0", i_(interp.vars["PRGB0"]), 0)
-check("GxROM $01: PRGB1=1", i_(interp.vars["PRGB1"]), 1)
-check("GxROM $01: CHR field -> CHRB0=2", i_(interp.vars["CHRB0"]), 2)
-check("GxROM $01: CHRB1=3", i_(interp.vars["CHRB1"]), 3)
+check("GxROM $01: PRG field -> 32K bank 0 (8K banks 0-3)", p8(interp), [0, 1, 2, 3])
+check("GxROM $01: CHR field -> 8K bank 1 (1K banks 8-15)", c1(interp), list(range(8, 16)))
 check("GxROM $01: bus_read $8000 reads PRG 32K bank 0", bus_read(interp, 0x8000), 0)
 check("GxROM $01: ppu_read $0000 reads CHR 8K bank 1", ppu_read(interp, 0x0000), 2)
 

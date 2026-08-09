@@ -7,7 +7,7 @@ sprite pattern-table (CHR) fetch correctness, specifically:
    bytes, across a spread of distinct tile indices (not just adjacent pairs
    like the 8x16 test used), both pattern tables, both 8x8 and 8x16 modes?
 2. THE likely culprit per the coordinator: does sprite CHR fetch correctly
-   apply the CURRENT CHR bank (CHRB0/CHRB1) the same way background CHR
+   apply the CURRENT CHR windows (the C1 1K bank registers) the same way background CHR
    fetch does? This ROM uses mapper 66 (GxROM), which bank-switches CHR --
    if sprite fetch used stale/different bank state than background fetch,
    sprites would show tiles from the wrong bank ("wrong items displayed"
@@ -78,8 +78,7 @@ interp.lists["VRAM"] = [0] * 2048
 interp.lists["PAL"] = [0] * 32
 interp.vars["CHRRAM"] = 0
 interp.vars["CHRBANKS"] = 1
-interp.vars["CHRB0"] = 0
-interp.vars["CHRB1"] = 1
+interp.lists["C1"] = list(range(8))
 interp.vars["MAPPER"] = 0
 interp.vars["MIRROR"] = 0
 
@@ -106,7 +105,7 @@ for t in range(NTILES_PER_BANK):
 # =====================================================================
 # 2) THE likely culprit: sprite CHR fetch vs background CHR fetch under a
 # real mapper-66-triggered CHR bank switch. Both should read from the SAME
-# bank state (CHRB0/CHRB1), since both ultimately call ppu_read/chr_read.
+# bank state (the C1 window registers), since both call ppu_read/chr_read.
 # =====================================================================
 print("\n--- sprite CHR fetch vs background CHR fetch, same CHR bank switch ---")
 interp2 = fresh()
@@ -123,10 +122,8 @@ interp2.vars["CHRRAM"] = 0
 interp2.vars["MAPPER"] = 66
 interp2.vars["CHRBANKS"] = NBANK4K // 2  # 8K units
 interp2.vars["PRGBANKS"] = 2
-interp2.vars["PRGB0"] = 0
-interp2.vars["PRGB1"] = 1
-interp2.vars["CHRB0"] = 0
-interp2.vars["CHRB1"] = 1
+interp2.lists["P8"] = [0, 1, 2, 3]
+interp2.lists["C1"] = list(range(8))
 interp2.vars["P_CTRL"] = 0x00  # 8x8 sprites, sprite pattern table = bank0 ($0000-$0FFF window)
 
 OAM2 = [0xFF] * 256
@@ -146,11 +143,11 @@ for chrbank_8k in range(NBANK4K // 2):
     reg_value = chrbank_8k & 0x03
     bus_write(interp2, 0x8000, reg_value)
 
-    expected_sub_bank0 = chrbank_8k * 2       # CHRB0 after this select
+    expected_sub_bank0 = chrbank_8k * 2       # first 4K sub-bank after this select
     expected_marker0 = 0x40 + expected_sub_bank0
 
     # background fetch path: ppu_read at PPU address 5*16=80 (tile5, row0),
-    # within the $0000-$0FFF window -> should read sub-bank CHRB0
+    # within the $0000-$0FFF window -> should read the first 4K sub-bank
     bg_val = ppu_read(interp2, 5 * 16 + 0)
     check("CHR bank %d: background ppu_read reads correct sub-bank marker" % chrbank_8k,
           bg_val, expected_marker0)

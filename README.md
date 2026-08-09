@@ -57,10 +57,10 @@ bug-by-bug. Summary:
 | 2 | Memory bus, PPU register plumbing ($2000-$2007), mapper dispatch scaffolding | DONE |
 | 3 | 6502 CPU core: all 151 official opcodes, 13 addressing modes, 7 flags, reset/NMI/IRQ | DONE, verified (36 checks) |
 | 4 | CPU correctness verification (hand-authored suite, real block graph) | DONE |
-| 5 | Mappers: NROM, UxROM, CNROM, MMC1 (5-write serial-shift protocol), GxROM/66 | DONE, verified (mapper suite) |
+| 5 | Mappers: NROM, UxROM, CNROM, MMC1 (5-write serial-shift protocol), GxROM/66, **MMC3/4 (incl. scanline IRQ)** — all on a shared fine-grained bank-window model (four 8K PRG windows, eight 1K CHR windows) | DONE, verified (mapper suite + 63-check MMC3 suite) |
 | 6a | PPU background rendering (pattern-table decode, attribute palettes, framebuffer, Pen flush) | DONE, verified (11 checks) |
 | 6b | Sprites (OAM, priority, sprite-0-hit, overflow) + loopy scroll registers, **including fine-X sub-tile scrolling** | DONE, verified (25+22 checks across 2 files) |
-| 7 | iNES cartridge (`.nes`) loader | DONE, verified (22 checks) |
+| 7 | Cartridge (`.nes`) loader — iNES 1.0 **and NES 2.0** headers, incl. four-screen mirroring | DONE, verified (48 checks) |
 | 8 | Main loop: scanline-granularity CPU/PPU timing, vblank/NMI, Pen flush | DONE, verified (15 checks) |
 | 9 (audio) | APU — NOT built yet. A "click-train" pitch approximation technique is being prototyped/iterated (v1→v2→v3→v4) in `progress/audio_prototype*.sb3`, standalone and unintegrated. v2/v3's warp-mode timing fix is confirmed correctly applied but the gap persists — currently investigating a possible audio-engine startup-latency floor (see below) | PROTOTYPE, unverified, possible hard limitation under investigation |
 
@@ -96,9 +96,10 @@ proposed alternatives if the limitation is confirmed real.
 
 **Structurally verified**, every phase, via `interp.py` walking the real
 generated block graph (not a re-derivation — the actual `.sb3` logic):
-full 6502 CPU, NROM/UxROM/CNROM/MMC1/GxROM(66) mapper support, PPU background+sprite
+full 6502 CPU, NROM/UxROM/CNROM/MMC1/GxROM(66)/MMC3(4) mapper support, PPU background+sprite
 rendering with priority/sprite-0-hit and coarse (8px-granularity) scrolling,
-a real iNES header parser + loader, and a scanline-driven main loop with
+a real iNES 1.0 / NES 2.0 header parser + loader (including four-screen
+mirroring with its full 4KB of nametable VRAM), and a scanline-driven main loop with
 correct vblank/NMI timing.
 
 **Not verified, and not achievable in this environment:** booting and
@@ -121,9 +122,12 @@ details):
   games) won't render correctly, though between-scanline effects work fine.
 - The real 2C02's specific *buggy* sprite-overflow evaluation algorithm
   (a simpler, always-correct overflow flag is implemented instead).
-- Four-screen mirroring's extra 2KB of VRAM (the mode is detected and
-  the mirror value set, but the extra VRAM isn't provisioned).
-- NES 2.0 header extensions (falls back to plain iNES 1.0 interpretation).
+- MMC3's IRQ timing is scanline-granularity, not PPU-A12-edge exact: the
+  counter is clocked once per rendered scanline. Between-scanline effects
+  (status bars, split screens) work; a raster split landing *mid*-scanline
+  will not. See `docs/mapper_specs.md`.
+- MMC3 PRG-RAM write protection ($A001) is stored but not enforced, and MMC6
+  / MMC3 submapper variants are not implemented.
 - APU (audio) — not part of any phase in this project's plan.
 
 ## Build system

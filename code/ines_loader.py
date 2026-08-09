@@ -15,18 +15,21 @@ iNES header layout (16 bytes, trainer immediately after if present):
   6     flags6: bit0 mirroring (0=horizontal,1=vertical), bit1 battery-backed
         PRG-RAM, bit2 512-byte trainer present, bit3 four-screen VRAM
         (overrides bit0), bits4-7 mapper number low nibble
-  7     flags7: bits4-7 mapper number high nibble (NES 2.0 detection: bits
-        0-1 == 2 means byte 7's low bits are format-id, not mapper bits --
-        NES 2.0 is not specially handled here, falls back to iNES 1.0
-        interpretation, which is wrong for NES2.0 files but fine for the
-        synthetic/most common real-world iNES 1.0 ROMs)
-  8-15  further NES2.0 / rarely-used iNES fields, ignored here
+  7     flags7: bits4-7 mapper number high nibble; bits 2-3 == 2 means the
+        file is NES 2.0 (see below)
+  8-15  further NES2.0 / rarely-used iNES fields
+
+NES 2.0 (flags7 bits 2-3 == 2) additionally uses:
+  8     bits 0-3 mapper number bits 8-11; bits 4-7 submapper
+  9     bits 0-3 PRG-ROM size MSB nibble; bits 4-7 CHR-ROM size MSB nibble.
+        A nibble of $F switches that size field to *exponent notation*: the
+        LSB byte is then EEEEEEMM, meaning size = 2^EEEEEE * (MM*2+1) BYTES
+        (not banks). Handled explicitly below.
 
 MIRROR convention matches nt_index in build_core.py: 0=horizontal,
-1=vertical, 2=single-screen-A, 3=single-screen-B, 4=four-screen (falls
-through nt_index's default branch, which treats it like a 2-nametable
-wrap -- four-screen boards need their own extra 2KB of VRAM that this
-loader does NOT provision; flagged as a known limitation below).
+1=vertical, 2=single-screen-A, 3=single-screen-B, 4=four-screen. VRAM is
+4096 entries, and nt_index's four-screen branch gives each of the four
+logical nametables its own 1KB physical page.
 """
 
 MAGIC = b"NES\x1a"
@@ -51,6 +54,26 @@ def parse_ines(data):
 
     mapper = (flags7 & 0xF0) | (flags6 >> 4)
 
+    nes2 = ((flags7 >> 2) & 0x03) == 2
+    submapper = 0
+    prg_size_bytes = None
+    chr_size_bytes = None
+    if nes2:
+        byte8 = data[8]
+        byte9 = data[9]
+        mapper |= (byte8 & 0x0F) << 8
+        submapper = (byte8 >> 4) & 0x0F
+        prg_msb = byte9 & 0x0F
+        chr_msb = (byte9 >> 4) & 0x0F
+        if prg_msb == 0x0F:
+            prg_size_bytes = _exponent_size(prg_banks, "PRG")
+        else:
+            prg_banks = (prg_msb << 8) | prg_banks
+        if chr_msb == 0x0F:
+            chr_size_bytes = _exponent_size(chr_banks, "CHR")
+        else:
+            chr_banks = (chr_msb << 8) | chr_banks
+
     if four_screen:
         mirror = 4
     else:
@@ -64,14 +87,14 @@ def parse_ines(data):
             raise INesError("trainer flag set but file too short for 512-byte trainer")
         offset += 512
 
-    prg_size = prg_banks * 16384
+    prg_size = prg_size_bytes if prg_size_bytes is not None else prg_banks * 16384
     prg = data[offset:offset + prg_size]
     if len(prg) != prg_size:
         raise INesError("file too short for declared PRG-ROM size (expected %d, got %d)"
                          % (prg_size, len(prg)))
     offset += prg_size
 
-    chr_size = chr_banks * 8192
+    chr_size = chr_size_bytes if chr_size_bytes is not None else chr_banks * 8192
     chr_data = data[offset:offset + chr_size]
     if len(chr_data) != chr_size:
         raise INesError("file too short for declared CHR-ROM size (expected %d, got %d)"
@@ -79,20 +102,38 @@ def parse_ines(data):
 
     return {
         "prg": prg,
-        "chr": chr_data,          # empty bytes if chr_banks == 0 (CHR-RAM board)
-        "chr_is_ram": chr_banks == 0,
+        "chr": chr_data,          # empty bytes if the board uses CHR-RAM
+        "chr_is_ram": chr_size == 0,
         "mapper": mapper,
+        "submapper": submapper,
+        "nes2": nes2,
         "mirror": mirror,
-        "prg_banks_16k": prg_banks,
-        "chr_banks_8k": chr_banks,
+        "four_screen": four_screen,
+        # sizes in whole banks, rounded UP so an exponent-notation (or simply
+        # non-power-of-two) size still yields a bank count the bus math can use
+        "prg_banks_16k": (prg_size + 16383) // 16384,
+        "chr_banks_8k": (chr_size + 8191) // 8192,
+        "prg_size": prg_size,
+        "chr_size": chr_size,
         "battery": battery,
         "trainer": trainer,
     }
 
 
+def _exponent_size(lsb, which):
+    """NES 2.0 exponent-notation ROM size: the size LSB byte is EEEEEEMM,
+    giving size = 2^EEEEEE * (MM*2 + 1) BYTES."""
+    exponent = (lsb >> 2) & 0x3F
+    multiplier = (lsb & 0x03) * 2 + 1
+    if exponent > 40:
+        raise INesError("NES 2.0 %s exponent-notation size is absurdly large "
+                        "(exponent=%d)" % (which, exponent))
+    return (1 << exponent) * multiplier
+
+
 def build_synthetic_nes(prg_banks=2, chr_banks=1, mapper=0, mirror=0,
                          battery=False, four_screen=False, has_trainer=False,
-                         prg_fill=None, chr_fill=None):
+                         prg_fill=None, chr_fill=None, nes2=False, submapper=0):
     """Construct a minimal, structurally-valid synthetic .nes file for
     testing the loader end-to-end without needing a real commercial ROM.
     prg_fill/chr_fill: optional callables (bank_index, offset_in_bank) ->
@@ -116,11 +157,15 @@ def build_synthetic_nes(prg_banks=2, chr_banks=1, mapper=0, mirror=0,
 
     header = bytearray(16)
     header[0:4] = MAGIC
-    header[4] = prg_banks
-    header[5] = chr_banks
+    header[4] = prg_banks & 0xFF
+    header[5] = chr_banks & 0xFF
     header[6] = flags6
     header[7] = flags7
     # bytes 8-15 left as 0 (PRG-RAM size / TV system / unused, iNES 1.0)
+    if nes2:
+        header[7] = flags7 | 0x08          # bits 2-3 = 0b10 -> NES 2.0
+        header[8] = ((mapper >> 8) & 0x0F) | ((submapper & 0x0F) << 4)
+        header[9] = ((prg_banks >> 8) & 0x0F) | (((chr_banks >> 8) & 0x0F) << 4)
 
     out = bytearray(header)
     if has_trainer:
@@ -139,10 +184,10 @@ def load_rom_into_emu(e, nes_bytes):
     already-`declare_state`-initialized Emu `e`: overwrites the PRG/CHR
     lists (padding CHR to at least 8192 bytes of CHR-RAM if the board has
     none, since chr_read/chr_write always index into a real list) and sets
-    MAPPER/PRGBANKS/CHRBANKS/MIRROR/CHRRAM/PRGB0/PRGB1/CHRB0/CHRB1 to their
-    post-load power-on defaults (bank 0 at $8000, last bank at $C000, first
-    two 4K CHR banks -- matching what mapper_write's various board handlers
-    assume a loader has already set up, per docs/mapper_specs.md)."""
+    MAPPER/PRGBANKS/CHRBANKS/MIRROR/CHRRAM plus the fine-grained bank-window
+    registers P8 (four 8K PRG windows) and C1 (eight 1K CHR windows) to their
+    post-load power-on defaults -- matching what mapper_write's various board
+    handlers assume a loader has already set up, per docs/mapper_specs.md."""
     parsed = parse_ines(nes_bytes)
 
     e.set_list_items("PRG", list(parsed["prg"]))
@@ -162,7 +207,27 @@ def load_rom_into_emu(e, nes_bytes):
     e.set_var_value("PRGBANKS", prg_banks_16k)
     e.set_var_value("CHRBANKS", chr_banks_8k)
     e.set_var_value("CHRRAM", chr_ram_flag)
-    if parsed["mapper"] == 66:
+    # CHR: eight 1K windows, linear (banks 0-7) at power-on for every board.
+    e.set_list_items("C1", list(range(8)))
+
+    last16 = prg_banks_16k - 1
+    total8 = prg_banks_16k * 2
+    if parsed["mapper"] == 4:
+        # MMC3: R6=0 at $8000, R7=1 at $A000, second-last fixed at $C000, last
+        # fixed at $E000 (PRG mode 0, CHR inversion off) -- the standard
+        # power-on state MMC3 games' reset code assumes before it programs the
+        # bank registers itself.
+        e.set_list_items("P8", [0, 1, total8 - 2, total8 - 1])
+        e.set_list_items("M3R", [0, 0, 0, 0, 0, 0, 0, 1])
+        e.set_var_value("M3_SEL", 0)
+        e.set_var_value("M3_PRGMODE", 0)
+        e.set_var_value("M3_CHRINV", 0)
+        e.set_var_value("M3_PRGRAMPROT", 0)
+        e.set_var_value("M3_IRQLATCH", 0)
+        e.set_var_value("M3_IRQCNT", 0)
+        e.set_var_value("M3_IRQRELOAD", 0)
+        e.set_var_value("M3_IRQEN", 0)
+    elif parsed["mapper"] == 66:
         # GxROM/MHROM: the PRG/CHR windows switch as whole 32K/8K units (one
         # register controls both), so there's no "fixed last bank" the way
         # UxROM/CNROM/MMC1's power-on defaults below assume -- default to
@@ -170,14 +235,11 @@ def load_rom_into_emu(e, nes_bytes):
         # real hardware's typical power-on register state and what the
         # cartridge's own reset code will immediately overwrite via its
         # first $8000-$FFFF write anyway.
-        e.set_var_value("PRGB0", 0)
-        e.set_var_value("PRGB1", 1)
-        e.set_var_value("CHRB0", 0)
-        e.set_var_value("CHRB1", 1 if chr_banks_8k * 2 > 1 else 0)
+        e.set_list_items("P8", [0, 1, 2, 3])   # 32K bank 0 selected
     else:
-        e.set_var_value("PRGB0", 0)
-        e.set_var_value("PRGB1", prg_banks_16k - 1)
-        e.set_var_value("CHRB0", 0)
-        e.set_var_value("CHRB1", 1 if chr_banks_8k * 2 > 1 else 0)
+        # NROM / UxROM / CNROM / MMC1: 16K bank 0 at $8000, LAST 16K bank at
+        # $C000. For a 16K (NROM-128) cart last16 == 0, which correctly gives
+        # the mirrored [0,1,0,1]; for 32K NROM-256 it gives [0,1,2,3].
+        e.set_list_items("P8", [0, 1, last16 * 2, last16 * 2 + 1])
 
     return parsed

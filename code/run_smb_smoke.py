@@ -71,7 +71,7 @@ print("stopped:", stopped_reason or "step budget exhausted mid-scanline-loop")
 print("total interp steps:", interp.steps, "elapsed: %.1fs" % elapsed)
 print("scanlines run:", scanline_count)
 for name in ["PC", "A", "X", "Y", "SP", "SCANLINE", "FRAME", "NMI_PENDING", "MAPPER",
-             "PRGBANKS", "CHRBANKS", "PRGB0", "PRGB1"]:
+             "PRGBANKS", "CHRBANKS"]:
     print("  %s = %s" % (name, interp.vars.get(name)))
 print("  distinct PC values visited:", len(pcs))
 print("  FB nonzero pixels: %d / %d" % (fb_nonzero(), len(interp.lists["FB"])))

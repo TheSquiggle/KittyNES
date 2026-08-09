@@ -230,8 +230,7 @@ PRG[0x7FFC] = 0x00  # reset vector lo -> $8000
 PRG[0x7FFD] = 0x80  # reset vector hi
 interp.lists["PRG"] = PRG
 interp.vars["PRGBANKS"] = 2
-interp.vars["PRGB0"] = 0
-interp.vars["PRGB1"] = 1
+interp.lists["P8"] = [0, 1, 2, 3]
 interp.vars["MAPPER"] = 0
 
 interp.call_proc_by_name("cpu_reset")  # proccode == "cpu_reset" (no args)

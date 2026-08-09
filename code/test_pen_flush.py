@@ -112,8 +112,7 @@ for g in range(4):
 interp.lists["PAL"] = PAL
 interp.vars["CHRRAM"] = 0
 interp.vars["CHRBANKS"] = 1
-interp.vars["CHRB0"] = 0
-interp.vars["CHRB1"] = 1
+interp.lists["C1"] = list(range(8))
 interp.vars["MAPPER"] = 0
 interp.vars["MIRROR"] = 0
 interp.vars["P_CTRL"] = 0

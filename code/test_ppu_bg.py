@@ -49,8 +49,7 @@ for row in range(8):
 interp.lists["CHR"] = CHR
 interp.vars["CHRRAM"] = 0
 interp.vars["CHRBANKS"] = 1
-interp.vars["CHRB0"] = 0
-interp.vars["CHRB1"] = 1
+interp.lists["C1"] = list(range(8))
 interp.vars["MAPPER"] = 0
 interp.vars["MIRROR"] = 0  # horizontal
 interp.vars["P_CTRL"] = 0  # BG pattern table = $0000

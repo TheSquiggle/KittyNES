@@ -91,8 +91,7 @@ def setup_quadrant_scene(interp):
     interp.lists["PAL"] = PAL
     interp.vars["CHRRAM"] = 0
     interp.vars["CHRBANKS"] = 1
-    interp.vars["CHRB0"] = 0
-    interp.vars["CHRB1"] = 1
+    interp.lists["C1"] = list(range(8))
     interp.vars["MAPPER"] = 0
     interp.vars["MIRROR"] = 0
     interp.vars["P_CTRL"] = 0
@@ -197,8 +196,7 @@ PAL4[16 + 3 * 4 + 3] = 0x30  # group3 color3 = white
 interp4.lists["PAL"] = PAL4
 interp4.vars["CHRRAM"] = 0
 interp4.vars["CHRBANKS"] = 1
-interp4.vars["CHRB0"] = 0
-interp4.vars["CHRB1"] = 1
+interp4.lists["C1"] = list(range(8))
 interp4.vars["MAPPER"] = 0
 interp4.vars["MIRROR"] = 0
 interp4.vars["P_CTRL"] = 0

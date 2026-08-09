@@ -12,7 +12,6 @@ progress/Famidash - Huge Man v1.2.8.sb3
 
 # Framebuffer diagnostic dumps (regenerable via code/dump_frames.py)
 progress/framedumps*/
-progress/framedumps_*/
 
 # Commercial ROM -- must never be committed to a public repo.
 test_roms/Super Mario Bros. + Duck Hunt (USA).nes

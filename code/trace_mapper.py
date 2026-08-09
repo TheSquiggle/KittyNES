@@ -44,33 +44,30 @@ def hooked(self, bid, frame):
             i = b["inputs"].get(aid)
             vals.append(self._inp_val(i, frame) if i else None)
         seen.append((self.vars.get("FRAME"), vals[0], vals[1],
-                     self.vars.get("PRGB0"), self.vars.get("CHRB0")))
+                     list(self.lists.get("P8") or []),
+                     list(self.lists.get("C1") or [])))
     return orig(self, bid, frame)
 
 
 Interp.exec_block = hooked
 
 it.call_proc_by_name("nes_init")
-print("post-init: PRGB0=%s PRGB1=%s CHRB0=%s CHRB1=%s" %
-      (it.vars.get("PRGB0"), it.vars.get("PRGB1"),
-       it.vars.get("CHRB0"), it.vars.get("CHRB1")))
+print("post-init: P8=%s C1=%s" % (it.lists.get("P8"), it.lists.get("C1")))
 
 for fr in range(frames):
     it.call_proc_by_name("run_frame")
 
 print(f"\nmapper_write calls seen: {len(seen)}")
 for rec in seen[:40]:
-    frn, a, v, prgb0, chrb0 = rec
+    frn, a, v, p8, c1 = rec
     try:
         ai = int(a)
         vi = int(v)
-        print(f"  frame={frn} addr=${ai:04X} val=${vi:02X} "
-              f"(PRGsel={vi & 3} CHRsel={(vi >> 4) & 3})  "
-              f"-> PRGB0={prgb0} CHRB0={chrb0}")
+        print(f"  frame={frn} addr=${ai:04X} val=${vi:02X}  -> P8={p8} C1={c1}")
     except (TypeError, ValueError):
         print("  ", rec)
 
-print("\nfinal: PRGB0=%s PRGB1=%s CHRB0=%s CHRB1=%s PRGBANKS=%s CHRBANKS=%s" %
-      (it.vars.get("PRGB0"), it.vars.get("PRGB1"), it.vars.get("CHRB0"),
-       it.vars.get("CHRB1"), it.vars.get("PRGBANKS"), it.vars.get("CHRBANKS")))
+print("\nfinal: P8=%s C1=%s PRGBANKS=%s CHRBANKS=%s" %
+      (it.lists.get("P8"), it.lists.get("C1"),
+       it.vars.get("PRGBANKS"), it.vars.get("CHRBANKS")))
 print("PRG list len:", len(it.lists["PRG"]), " CHR list len:", len(it.lists["CHR"]))

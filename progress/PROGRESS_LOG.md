@@ -1041,3 +1041,198 @@ loop 15, CPU OAM writes 18, multi-console 14).
 
 This mirrors the reference emulator's structure, where the NES sprite holds 254
 local variables / 55 local lists and only shared APU state sits on the Stage.
+
+---
+
+## 2026-08-08 — Fine-grained bank windows + MMC3 (mapper 4) + NES 2.0 headers + four-screen mirroring
+
+Target: make `test_roms/Famidash - Huge Man v1.2.8.nes` work — mapper 4
+(MMC3), 2048K PRG, 256K CHR, NES 2.0 header, battery, four-screen mirroring.
+Three separate gaps had to close.
+
+### 1. Fine-grained bank windows (prerequisite refactor)
+
+The bus expressed PRG as two 16K windows (`PRGB0`/`PRGB1`) and CHR as two 4K
+windows (`CHRB0`/`CHRB1`). MMC3 needs **four 8K PRG banks** and **eight 1K CHR
+banks**, which that model simply cannot represent.
+
+Replaced with a single fine-grained representation used by **every** mapper —
+`P8`, a 4-entry list of 8K PRG bank indices, and `C1`, an 8-entry list of 1K
+CHR bank indices. `mapper_read` is now
+`P8[(a-$8000) div 8192] * 8192 + ((a-$8000) mod 8192)` and `chr_read`/
+`chr_write` are `C1[a div 1024] * 1024 + (a mod 1024)`. The four old variables
+are gone.
+
+Coarser boards go through new shared helper procs (`bank_prg32`,
+`bank_prg16`, `bank_prg8`, `bank_chr8`, `bank_chr4`, `bank_chr2`,
+`bank_chr1`) rather than touching `P8`/`C1` directly, so NROM/UxROM/CNROM/
+MMC1/GxROM each got *simpler*, not more complex. This was an original design
+requirement that had been deferred; paying it off means future mappers need
+no further bus rework.
+
+`ines_loader.load_rom_into_emu`'s power-on defaults moved to the same model:
+`P8 = [0, 1, last16*2, last16*2+1]` universally (which degenerates correctly
+to the mirrored `[0,1,0,1]` for a 16K NROM-128 and to `[0,1,2,3]` for
+NROM-256), `C1 = [0..7]`, with mapper-specific overrides for GxROM and MMC3.
+
+**GxROM's bit-field assignment was deliberately left untouched** (PRG = bits
+5-4, CHR = bits 1-0) — that was fixed earlier today after a real bug, and
+`test_mappers.py`'s asymmetric `$10`/`$01` checks were preserved (rewritten to
+assert against `P8`/`C1` instead of the deleted variables, with the same
+mirror-image intent and the same failure mode if the order is ever flipped).
+
+**Regression evidence, not just green tests:** re-ran the real SMB+Duck Hunt
+ROM through `dump_frames.py` for 14 frames and compared the PNGs against the
+pre-refactor run in `progress/framedumps/` — **all 14 frames byte-identical**.
+The refactor is a faithful reorganization, not a behavior change.
+
+### 2. MMC3 (mapper 4)
+
+Implemented from the NESdev wiki page, **fetched at implementation time**
+rather than recalled — the mapper-66 bug earlier today came from a mis-stated
+spec, so recall is no longer trusted for register layouts. Full writeup in
+`docs/mapper_specs.md`. Summary: bank select / bank data register pair
+addressed by address *range* and address *parity*; R0/R1 select 2K CHR banks,
+R2-R5 select 1K CHR banks, R6/R7 select 8K PRG banks; bit 6 swaps whether
+$8000 or $C000 holds R6 vs the fixed second-last bank ($A000 is always R7,
+**$E000 is always the last bank in both modes**); bit 7 (CHR A12 inversion)
+swaps which half of pattern-table space gets the 2K vs the 1K banks; `$A000`
+mirroring (ignored on four-screen carts); `$A001` PRG-RAM protect (stored, not
+enforced); and the `$C000`-`$FFFF` IRQ latch / reload / disable+ack / enable
+quartet.
+
+**Scanline IRQ.** Real MMC3 clocks its counter on filtered PPU A12 rising
+edges. This emulator's loop is scanline-granularity, so `run_scanline` calls
+`mmc3_clock_irq` once per *rendered* scanline (skipped entirely when rendering
+is off, since there is no A12 activity then). The counter logic itself is
+exact — reload-or-decrement, fire at zero when enabled — feeding the CPU's
+pre-existing `IRQ_PENDING` dispatch. **Documented honestly as an
+approximation**: between-scanline effects (status bars, split screens) are
+correct; a raster split landing mid-scanline will not be. Same class of
+limitation the main loop already had, but MMC3 games exercise it far more.
+
+### 3. NES 2.0 headers + four-screen mirroring
+
+`ines_loader.py` now detects NES 2.0 (flags7 bits 2-3 == 2) and parses byte 8
+(mapper bits 8-11 + submapper) and byte 9 (PRG/CHR size MSB nibbles),
+including the **exponent-notation special case** when a nibble is `$F`
+(size = 2^E * (MM*2+1) *bytes*), with an explicit error for absurd exponents
+rather than a silent mis-size.
+
+Four-screen mirroring (flags6 bit 3) now actually works: `VRAM` grew from 2048
+to 4096 entries and `nt_index`'s four-screen branch gives each logical
+nametable its own 1KB physical page (`U4 = U2`) instead of wrapping onto two.
+Modes 0-3 are provably unchanged (explicitly re-tested).
+
+### Verification
+
+New `code/test_mmc3.py` — **63 checks**, all driving the real generated block
+graph through `interp.py`. Covers the register pair (including
+non-conventional addresses like $9FFE/$9FFF/$BFFE), all 8 R registers latching
+distinct values, R6/R7 6-bit masking vs R0-R5 *not* being masked, both PRG
+modes' full layouts confirmed by `bus_read` at every window, both
+CHR-inversion states' full layouts confirmed by `ppu_read` at all eight 1K
+windows, mode bits re-laying windows with no data write, `$C0` setting both
+mode bits independently, mirroring in both directions and its four-screen
+override, and the IRQ counter's latch/reload/enable/disable/acknowledge with
+two different latch values — plus the IRQ firing through the **real
+`run_scanline`** after exactly the right number of rendered scanlines and
+never firing with rendering disabled.
+
+**Every value is deliberately asymmetric.** R0-R7 all get distinct,
+non-interchangeable values; R0/R1 get *odd* values so the "2K banks ignore the
+low bit" rule is actually exercised; the two PRG modes and two CHR-inversion
+states are asserted against *different* expected layouts. This is a direct
+response to the mapper-66 bug that survived 16 checks because every one used
+the symmetric value `$11`.
+
+`code/test_ines_loader.py` gained NES 2.0 cases (asymmetric PRG/CHR MSB
+nibbles — 0x104 vs 0x203 — so a swapped nibble fails loudly; 12-bit mapper
+number + submapper; exponent notation; absurd-exponent error) and a
+four-screen case (each nametable to its own page, plus modes 0-3 unchanged).
+Now 48 checks.
+
+**Full suite green, 13 files, no regressions:** CPU 36, CPU OAM writes, loader
+48, main loop 15, mappers, **MMC3 63**, multi-console 14, palette 40, pen
+flush, PPU bg 11, sprites 22+25, sprite/CHR-bank 28.
+
+### Real-ROM smoke test: Famidash boots and runs MMC3 correctly, but stalls in region detection
+
+Built `progress/nes_emulator_famidash.sb3` (gitignored — it bakes in 2.3MB of
+ROM data; validates clean structurally) and ran the ROM through `interp.py`
+for 40+ frames via `dump_frames.py`, plus targeted diagnostics.
+
+**What demonstrably works:**
+
+- The NES 2.0 header parses correctly (2048K PRG / 256K CHR / mapper 4 /
+  four-screen / battery) and the file's byte length matches the parsed sizes
+  exactly.
+- The CPU executes real game code continuously across many banks, reaches its
+  per-frame main loop, and keeps writing `$2001`/`$2005`/`$2004` every frame.
+- **MMC3 banking is live and behaving exactly as the spec says**: the game
+  switches into PRG mode 1 and `P8` settles to `[254, 58, 0, 255]` —
+  second-last 8K bank fixed at $8000, R7 at $A000, R6 at $C000, and the
+  **last** bank (255) fixed at $E000. R7 changes over time (1 → 35 → 48 → 59 →
+  58) as the game swaps banks.
+- **MMC3 IRQs fire and are serviced.** Disassembling the ROM at the hot PCs
+  shows `$F8F5` is the game's IRQ handler (`PHA/TXA/PHA/TYA/PHA`, then
+  `STA $E000` — the MMC3 IRQ disable+acknowledge — then `JSR $F906`, restore,
+  `RTI`). It runs **17 times per frame**, so the scanline IRQ counter, the
+  `IRQ_PENDING` wiring and the CPU's IRQ dispatch are all working end-to-end
+  on a real ROM.
+- **Four-screen VRAM is provably being used**: the game clears exactly **4096**
+  bytes through `$2007` into the nametables — the full 4KB only a four-screen
+  board has. Before this change that would have wrapped onto 2KB.
+
+**Where it stalls — identified precisely.** After clearing the nametables in
+the first ~5 frames the game never writes tile data again; VRAM stays zero,
+palette RAM stays uniformly `$0F`, and the framebuffer is a blank screen for
+all 40 frames. A hot-PC histogram (`code/diag_pc.py`) shows **94% of every
+frame is spent in a 4-instruction loop at `$800C-$8012`**. Disassembling PRG
+bank 254 there:
+
+```
+8000: A2 00      LDX #$00
+8002: A0 00      LDY #$00
+8004: A5 00      LDA $00
+8006: C5 00      CMP $00
+8008: F0 FC      BEQ $8006      ; wait for $00 to change
+800A: A5 00      LDA $00
+800C: E8         INX            ; <-- 2501 iterations/frame observed
+800D: D0 01      BNE $8010
+800F: C8         INY
+8010: C5 00      CMP $00
+8012: F0 F8      BEQ $800C      ; count until $00 changes again
+8014: 98         TYA
+8015: 38         SEC
+8016: E9 0A      SBC #$0A
+8018: C9 03      CMP #$03
+801A: 90 02      BCC +2
+801C: A9 03      LDA #$03
+801E: 60         RTS
+```
+
+This is a **region-detection routine**: it counts loop iterations between two
+increments of zero-page `$00` (once per frame), takes the high byte of the
+count in `Y`, subtracts 10 and clamps to 0-3 — i.e. NTSC / PAL / Dendy. The
+loop is ~10 CPU cycles, so real NTSC hardware (29780 cycles/frame) yields
+roughly 2900-2980 iterations → `Y = 11` → region `1`. **We deliver 2501
+iterations → `Y = 9` → `9 - 10` underflows to 255 → clamped to region 3**, and
+the game proceeds down a path that never uploads graphics.
+
+So the blocker is **CPU cycle accounting / interrupt overhead accuracy, not
+MMC3 bank mapping**. Roughly 5000 cycles per frame are unaccounted for versus
+real hardware. Plausible contributors, none yet confirmed: the per-instruction
+cycle table (page-cross and branch-taken penalties), the cost charged for the
+17 IRQ dispatches per frame, and NMI dispatch overhead. `CYCLES_PER_SCANLINE`
+itself is correct (`341/3 = 113.667`, × 262 = 29780).
+
+**Reported as-is, not as a success: the ROM does not render.** The MMC3
+implementation is verified correct at the unit level against the fetched spec
+*and* is observably doing the right thing on this real ROM; the remaining
+defect is upstream of it in CPU timing fidelity, and is not fixed here.
+
+Diagnostic scripts kept: `code/diag_famidash.py` (per-frame state census),
+`code/diag_ppuwrites.py` (PPU write census by register/region),
+`code/diag_pc.py` (hot-PC histogram for a single frame — this is the one that
+cracked it).

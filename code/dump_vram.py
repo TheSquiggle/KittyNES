@@ -64,9 +64,9 @@ palrgb = [int(x or 0) for x in L["PALRGB"]]
 
 print("P_CTRL=%s P_MASK=%s P_V=%s P_T=%s P_X=%s" %
       (V.get("P_CTRL"), V.get("P_MASK"), V.get("P_V"), V.get("P_T"), V.get("P_X")))
-print("MIRROR=%s CHRB0=%s CHRB1=%s CHRBANKS=%s PRGB0=%s PRGB1=%s" %
-      (V.get("MIRROR"), V.get("CHRB0"), V.get("CHRB1"), V.get("CHRBANKS"),
-       V.get("PRGB0"), V.get("PRGB1")))
+print("MIRROR=%s CHRBANKS=%s C1=%s P8=%s" %
+      (V.get("MIRROR"), V.get("CHRBANKS"),
+       [int(x or 0) for x in L["C1"]], [int(x or 0) for x in L["P8"]]))
 print("PAL RAM:", pal)
 print("nametable0 first 64 tiles:", vram[0:64])
 print("nametable0 attr (last 64 of page0):", vram[0x3C0:0x400])
@@ -74,15 +74,11 @@ print("nametable0 attr (last 64 of page0):", vram[0x3C0:0x400])
 patbase = 4096 if (int(V.get("P_CTRL") or 0) // 16) % 2 == 1 else 0
 print("BG patbase =", patbase)
 
-chrb0 = int(V.get("CHRB0") or 0)
-chrb1 = int(V.get("CHRB1") or 0)
+c1 = [int(x or 0) for x in L["C1"]]
 
 
 def chr_read(a):
-    if a < 4096:
-        i = chrb0 * 4096 + a
-    else:
-        i = chrb1 * 4096 + (a - 4096)
+    i = c1[a // 1024] * 1024 + (a % 1024)
     return chr_[i] if 0 <= i < len(chr_) else 0
 
 

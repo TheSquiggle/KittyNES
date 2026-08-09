@@ -118,27 +118,73 @@ def declare_state(e):
     e.lst("ROWPAL", [0] * 33)
 
 
+def bank_helpers(e):
+    """Window-setting helpers shared by every mapper. All of them ultimately
+    write the fine-grained P8 (8K PRG) / C1 (1K CHR) window registers; coarser
+    boards just call the coarser helper. They use their own scratch var (BK1)
+    so a caller's U1/U2/... are never clobbered."""
+    # PRG: whole 32K window (GxROM, MMC1 32K mode)
+    s = e.defproc("bank_prg32", ["b"])
+    for i in range(4):
+        e.repl(s, "P8", i + 1, e.ADD(e.MUL(e.ARG("b"), 4), i))
+    s.finalize()
+
+    # PRG: one 16K window w (0=$8000, 1=$C000) <- 16K bank b
+    s = e.defproc("bank_prg16", ["w", "b"])
+    e.setv(s, "BK1", e.MUL(e.ARG("w"), 2))
+    e.repl(s, "P8", e.ADD(e.V("BK1"), 1), e.MUL(e.ARG("b"), 2))
+    e.repl(s, "P8", e.ADD(e.V("BK1"), 2), e.ADD(e.MUL(e.ARG("b"), 2), 1))
+    s.finalize()
+
+    # PRG: one 8K window w (0..3) <- 8K bank b  (MMC3)
+    s = e.defproc("bank_prg8", ["w", "b"])
+    e.repl(s, "P8", e.ADD(e.ARG("w"), 1), e.ARG("b"))
+    s.finalize()
+
+    # CHR: whole 8K pattern-table space <- 8K bank b
+    s = e.defproc("bank_chr8", ["b"])
+    for i in range(8):
+        e.repl(s, "C1", i + 1, e.ADD(e.MUL(e.ARG("b"), 8), i))
+    s.finalize()
+
+    # CHR: one 4K window w (0=$0000, 1=$1000) <- 4K bank b
+    s = e.defproc("bank_chr4", ["w", "b"])
+    e.setv(s, "BK1", e.MUL(e.ARG("w"), 4))
+    for i in range(4):
+        e.repl(s, "C1", e.ADD(e.V("BK1"), i + 1), e.ADD(e.MUL(e.ARG("b"), 4), i))
+    s.finalize()
+
+    # CHR: one 2K window w (0..3) <- b, expressed in 1K bank units (MMC3's R0/R1
+    # count in 1K units but ignore the low bit; the caller does that masking).
+    s = e.defproc("bank_chr2", ["w", "b"])
+    e.setv(s, "BK1", e.MUL(e.ARG("w"), 2))
+    e.repl(s, "C1", e.ADD(e.V("BK1"), 1), e.ARG("b"))
+    e.repl(s, "C1", e.ADD(e.V("BK1"), 2), e.ADD(e.ARG("b"), 1))
+    s.finalize()
+
+    # CHR: one 1K window w (0..7) <- 1K bank b
+    s = e.defproc("bank_chr1", ["w", "b"])
+    e.repl(s, "C1", e.ADD(e.ARG("w"), 1), e.ARG("b"))
+    s.finalize()
+
+
 def phase2_bus(e):
+    bank_helpers(e)
+
     # ---------------- chr_read / chr_write --------------------------
+    # Eight independent 1K windows: C1[a div 1024] * 1024 + (a mod 1024).
     s = e.defproc("chr_read", ["a"])
     a = lambda: e.ARG("a")
-    # 4K bank select
-    ctx = e.IFELSE(s, e.LT(a(), 4096))
-    with ctx as b:
-        e.setv(b, "U1", e.ADD(e.MUL(e.V("CHRB0"), 4096), a()))
-    with ctx.substack2() as b:
-        e.setv(b, "U1", e.ADD(e.MUL(e.V("CHRB1"), 4096), e.SUB(a(), 4096)))
-    e.setv(s, "RESULT", e.IT("CHR", e.ADD(e.MOD(e.V("U1"), e.LEN("CHR")), 1)))
+    e.setv(s, "MR1", e.ADD(e.MUL(e.IT("C1", e.ADD(e.IDIV(a(), 1024), 1)), 1024),
+                           e.MOD(a(), 1024)))
+    e.setv(s, "RESULT", e.IT("CHR", e.ADD(e.MOD(e.V("MR1"), e.LEN("CHR")), 1)))
     s.finalize()
 
     s = e.defproc("chr_write", ["a", "v"])
     with e.IF(s, e.EQ(e.V("CHRRAM"), 1)) as b:
-        ctx = e.IFELSE(b, e.LT(e.ARG("a"), 4096))
-        with ctx as c:
-            e.setv(c, "U1", e.ADD(e.MUL(e.V("CHRB0"), 4096), e.ARG("a")))
-        with ctx.substack2() as c:
-            e.setv(c, "U1", e.ADD(e.MUL(e.V("CHRB1"), 4096), e.SUB(e.ARG("a"), 4096)))
-        e.repl(b, "CHR", e.ADD(e.MOD(e.V("U1"), e.LEN("CHR")), 1), e.ARG("v"))
+        e.setv(b, "MR1", e.ADD(e.MUL(e.IT("C1", e.ADD(e.IDIV(e.ARG("a"), 1024), 1)), 1024),
+                               e.MOD(e.ARG("a"), 1024)))
+        e.repl(b, "CHR", e.ADD(e.MOD(e.V("MR1"), e.LEN("CHR")), 1), e.ARG("v"))
     s.finalize()
 
     # ---------------- nametable index --------------------------------
@@ -162,8 +208,11 @@ def phase2_bus(e):
                 c4 = e.IFELSE(d, e.EQ(e.V("MIRROR"), 3))  # single-screen B
                 with c4 as f:
                     e.setv(f, "U4", 1)
-                with c4.substack2() as f:              # four-screen (2KB only)
-                    e.setv(f, "U4", e.MOD(e.V("U2"), 2))
+                with c4.substack2() as f:              # four-screen (full 4KB)
+                    # Each logical nametable gets its own physical page -- this
+                    # is the whole point of a four-screen board's extra 2KB of
+                    # on-cart VRAM. VRAM is 4096 entries so U4 may be 0..3.
+                    e.setv(f, "U4", e.V("U2"))
     e.setv(s, "RESULT", e.ADD(e.MUL(e.V("U4"), 1024), e.V("U3")))
     s.finalize()
 
@@ -205,7 +254,7 @@ def phase2_bus(e):
     e.lst("PRGRAM", [0] * 8192)
 
     # ---------------- mapper_read ------------------------------------
-    # PRG banking is expressed via PRGB0 (16K bank at $8000) and PRGB1 ($C000)
+    # PRG banking is expressed via four 8K windows: P8[(a-$8000) div 8192].
     s = e.defproc("mapper_read", ["a"])
     ctx = e.IFELSE(s, e.LT(e.ARG("a"), 32768))
     with ctx as b:                    # $4020-$7FFF: PRG-RAM at $6000-$7FFF
@@ -215,12 +264,10 @@ def phase2_bus(e):
         with c2.substack2() as c:
             e.setv(c, "RESULT", 0)
     with ctx.substack2() as b:
-        c2 = e.IFELSE(b, e.LT(e.ARG("a"), 49152))
-        with c2 as c:
-            e.setv(c, "U1", e.ADD(e.MUL(e.V("PRGB0"), 16384), e.SUB(e.ARG("a"), 32768)))
-        with c2.substack2() as c:
-            e.setv(c, "U1", e.ADD(e.MUL(e.V("PRGB1"), 16384), e.SUB(e.ARG("a"), 49152)))
-        e.setv(b, "RESULT", e.IT("PRG", e.ADD(e.MOD(e.V("U1"), e.LEN("PRG")), 1)))
+        e.setv(b, "MR1", e.SUB(e.ARG("a"), 32768))            # 0..32767
+        e.setv(b, "MR2", e.ADD(e.MUL(e.IT("P8", e.ADD(e.IDIV(e.V("MR1"), 8192), 1)), 8192),
+                               e.MOD(e.V("MR1"), 8192)))
+        e.setv(b, "RESULT", e.IT("PRG", e.ADD(e.MOD(e.V("MR2"), e.LEN("PRG")), 1)))
     s.finalize()
 
     # ---------------- mapper bank recompute ---------------------------
@@ -229,26 +276,24 @@ def phase2_bus(e):
     e.setv(s, "U1", e.MOD(e.IDIV(e.V("M1_CTRL"), 4), 4))
     e.setv(s, "U2", e.MOD(e.V("M1_PRG"), 16))
     ctx = e.IFELSE(s, e.LT(e.V("U1"), 2))
-    with ctx as b:                     # 32KB switch
-        e.setv(b, "PRGB0", e.MUL(e.IDIV(e.V("U2"), 2), 2))
-        e.setv(b, "PRGB1", e.ADD(e.V("PRGB0"), 1))
+    with ctx as b:                     # 32KB switch (low bit of the 16K bank # ignored)
+        e.call(b, "bank_prg32", b=e.IDIV(e.V("U2"), 2))
     with ctx.substack2() as b:
         c2 = e.IFELSE(b, e.EQ(e.V("U1"), 2))
         with c2 as c:                  # fix first bank at $8000
-            e.setv(c, "PRGB0", 0)
-            e.setv(c, "PRGB1", e.V("U2"))
+            e.call(c, "bank_prg16", w=0, b=0)
+            e.call(c, "bank_prg16", w=1, b=e.V("U2"))
         with c2.substack2() as c:      # fix last bank at $C000
-            e.setv(c, "PRGB0", e.V("U2"))
-            e.setv(c, "PRGB1", e.SUB(e.V("PRGBANKS"), 1))
+            e.call(c, "bank_prg16", w=0, b=e.V("U2"))
+            e.call(c, "bank_prg16", w=1, b=e.SUB(e.V("PRGBANKS"), 1))
     # CHR mode = bit 4
     e.setv(s, "U3", e.MOD(e.IDIV(e.V("M1_CTRL"), 16), 2))
     ctx = e.IFELSE(s, e.EQ(e.V("U3"), 1))
     with ctx as b:                     # two 4K banks
-        e.setv(b, "CHRB0", e.V("M1_CHR0"))
-        e.setv(b, "CHRB1", e.V("M1_CHR1"))
-    with ctx.substack2() as b:         # one 8K bank
-        e.setv(b, "CHRB0", e.MUL(e.IDIV(e.V("M1_CHR0"), 2), 2))
-        e.setv(b, "CHRB1", e.ADD(e.V("CHRB0"), 1))
+        e.call(b, "bank_chr4", w=0, b=e.V("M1_CHR0"))
+        e.call(b, "bank_chr4", w=1, b=e.V("M1_CHR1"))
+    with ctx.substack2() as b:         # one 8K bank (low bit of the 4K bank # ignored)
+        e.call(b, "bank_chr8", b=e.IDIV(e.V("M1_CHR0"), 2))
     # mirroring from bits 0-1
     e.setv(s, "U4", e.MOD(e.V("M1_CTRL"), 4))
     ctx = e.IFELSE(s, e.EQ(e.V("U4"), 0))
@@ -266,6 +311,65 @@ def phase2_bus(e):
                 e.setv(d, "MIRROR", 0)     # horizontal
     s.finalize()
 
+    # ---------------- MMC3 (mapper 4) bank recompute -------------------
+    # Recomputes all four P8 windows and all eight C1 windows from the R0-R7
+    # bank registers plus the two mode bits, exactly per the NESdev MMC3 tables.
+    #
+    #   PRG (bit 6 of bank select = M3_PRGMODE):
+    #     mode 0: $8000=R6  $A000=R7  $C000=second-last  $E000=last
+    #     mode 1: $8000=2nd-last  $A000=R7  $C000=R6  $E000=last
+    #   -> $A000 is always R7 and $E000 is ALWAYS the last 8K bank; only which
+    #      of $8000/$C000 holds R6 vs the fixed second-last bank swaps.
+    #
+    #   CHR (bit 7 = M3_CHRINV, "A12 inversion"):
+    #     inv 0: 2K R0 @ $0000, 2K R1 @ $0800, 1K R2-R5 @ $1000-$1FFF
+    #     inv 1: 2K R0 @ $1000, 2K R1 @ $1800, 1K R2-R5 @ $0000-$0FFF
+    #   R0/R1 count in 1K units but ignore their low bit (2K banks can only be
+    #   even-aligned) -- that masking is done here, not in the write handler.
+    s = e.defproc("mmc3_apply", [])
+    e.setv(s, "M3_T1", e.SUB(e.MUL(e.V("PRGBANKS"), 2), 2))   # second-last 8K bank
+    e.setv(s, "M3_T2", e.SUB(e.MUL(e.V("PRGBANKS"), 2), 1))   # last 8K bank
+    ctx = e.IFELSE(s, e.EQ(e.V("M3_PRGMODE"), 0))
+    with ctx as b:
+        e.call(b, "bank_prg8", w=0, b=e.IT("M3R", 7))         # R6 -> $8000
+        e.call(b, "bank_prg8", w=2, b=e.V("M3_T1"))           # fixed -> $C000
+    with ctx.substack2() as b:
+        e.call(b, "bank_prg8", w=0, b=e.V("M3_T1"))           # fixed -> $8000
+        e.call(b, "bank_prg8", w=2, b=e.IT("M3R", 7))         # R6 -> $C000
+    e.call(s, "bank_prg8", w=1, b=e.IT("M3R", 8))             # R7 -> $A000 always
+    e.call(s, "bank_prg8", w=3, b=e.V("M3_T2"))               # last -> $E000 always
+    e.setv(s, "M3_T3", e.MUL(e.IDIV(e.IT("M3R", 1), 2), 2))   # R0, low bit cleared
+    e.setv(s, "M3_T4", e.MUL(e.IDIV(e.IT("M3R", 2), 2), 2))   # R1, low bit cleared
+    ctx = e.IFELSE(s, e.EQ(e.V("M3_CHRINV"), 0))
+    with ctx as b:
+        e.call(b, "bank_chr2", w=0, b=e.V("M3_T3"))
+        e.call(b, "bank_chr2", w=1, b=e.V("M3_T4"))
+        for i in range(4):
+            e.call(b, "bank_chr1", w=4 + i, b=e.IT("M3R", 3 + i))
+    with ctx.substack2() as b:
+        e.call(b, "bank_chr2", w=2, b=e.V("M3_T3"))
+        e.call(b, "bank_chr2", w=3, b=e.V("M3_T4"))
+        for i in range(4):
+            e.call(b, "bank_chr1", w=i, b=e.IT("M3R", 3 + i))
+    s.finalize()
+
+    # ---------------- MMC3 scanline IRQ counter ------------------------
+    # Real MMC3 clocks this on filtered PPU A12 rising edges, which during
+    # rendering happens once per scanline. This emulator's main loop is
+    # scanline-granularity (docs/main_loop.md), so we clock once per RENDERED
+    # scanline -- see docs/mapper_specs.md for what that approximation costs.
+    s = e.defproc("mmc3_clock_irq", [])
+    with e.IF(s, e.EQ(e.V("MAPPER"), 4)) as b:
+        ctx = e.IFELSE(b, e.OR(e.EQ(e.V("M3_IRQCNT"), 0), e.EQ(e.V("M3_IRQRELOAD"), 1)))
+        with ctx as c:
+            e.setv(c, "M3_IRQCNT", e.V("M3_IRQLATCH"))
+            e.setv(c, "M3_IRQRELOAD", 0)
+        with ctx.substack2() as c:
+            e.chg(c, "M3_IRQCNT", -1)
+        with e.IF(b, e.AND(e.EQ(e.V("M3_IRQCNT"), 0), e.EQ(e.V("M3_IRQEN"), 1))) as c:
+            e.setv(c, "IRQ_PENDING", 1)
+    s.finalize()
+
     # ---------------- mapper_write -----------------------------------
     s = e.defproc("mapper_write", ["a", "v"])
     ctx = e.IFELSE(s, e.LT(e.ARG("a"), 32768))
@@ -273,28 +377,25 @@ def phase2_bus(e):
         with e.IF(b, e.GT(e.ARG("a"), 24575)) as c:
             e.repl(c, "PRGRAM", e.SUB(e.ARG("a"), 24575), e.ARG("v"))
     with ctx.substack2() as b:
-        # UxROM (2)
+        # UxROM (2): switchable 16K at $8000, fixed LAST 16K at $C000.
         with e.IF(b, e.EQ(e.V("MAPPER"), 2)) as c:
-            e.setv(c, "PRGB0", e.MOD(e.ARG("v"), e.V("PRGBANKS")))
+            e.call(c, "bank_prg16", w=0, b=e.MOD(e.ARG("v"), e.V("PRGBANKS")))
+            e.call(c, "bank_prg16", w=1, b=e.SUB(e.V("PRGBANKS"), 1))
         # CNROM (3)
         with e.IF(b, e.EQ(e.V("MAPPER"), 3)) as c:
             # e.OR is LOGICAL/boolean or (operator_or) not numeric-default --
             # using it here always forced the divisor to 1 (both operands
-            # truthy), so CHRB0 never changed. Real "default to 1 if zero"
+            # truthy), so the CHR windows never changed. Real "default to 1 if zero"
             # guard: CHRBANKS + (CHRBANKS==0 ? 1 : 0), same boolean-coercion
             # idiom setnz uses (EQ(...) coerces to 0/1 in a numeric slot).
-            e.setv(c, "U1", e.MUL(e.MOD(e.ARG("v"),
-                                        e.ADD(e.V("CHRBANKS"), e.EQ(e.V("CHRBANKS"), 0))), 2))
-            e.setv(c, "CHRB0", e.V("U1"))
-            e.setv(c, "CHRB1", e.ADD(e.V("U1"), 1))
+            e.call(c, "bank_chr8", b=e.MOD(e.ARG("v"),
+                                           e.ADD(e.V("CHRBANKS"), e.EQ(e.V("CHRBANKS"), 0))))
         # GxROM/MHROM (66): one register, whole-window bank switching --
         # bits 0-1 select a 32K PRG bank (the ENTIRE $8000-$FFFF window
         # switches together, unlike UxROM/MMC1's fixed-last-bank scheme),
-        # bits 4-5 select an 8K CHR bank. Reuses the existing PRGB0/PRGB1
-        # (16K windows) / CHRB0/CHRB1 (4K windows) bus variables directly --
-        # no new state needed, since a 32K PRG bank is just two consecutive
-        # 16K banks and an 8K CHR bank is two consecutive 4K banks (the same
-        # trick MMC1's 32K PRG mode already uses in mmc1_apply).
+        # bits 4-5 select an 8K CHR bank. Expressed through the shared
+        # fine-grained windows: a 32K PRG bank is four consecutive 8K P8
+        # banks and an 8K CHR bank is eight consecutive 1K C1 banks.
         with e.IF(b, e.EQ(e.V("MAPPER"), 66)) as c:
             # Register layout per the NESdev GxROM spec:
             #     7  bit  0
@@ -309,12 +410,56 @@ def phase2_bus(e):
             # like SMB+Duck Hunt, which renders the right tilemap with the
             # wrong graphics ("wrong items displayed"). Caught by tracing
             # real mapper writes ($8002=$11, $BF02=$10) against real output.
-            e.setv(c, "U1", e.MOD(e.IDIV(e.ARG("v"), 16), 4))  # PRG bank (bits 5-4)
-            e.setv(c, "PRGB0", e.MUL(e.V("U1"), 2))
-            e.setv(c, "PRGB1", e.ADD(e.V("PRGB0"), 1))
-            e.setv(c, "U2", e.MOD(e.ARG("v"), 4))              # CHR bank (bits 1-0)
-            e.setv(c, "CHRB0", e.MUL(e.V("U2"), 2))
-            e.setv(c, "CHRB1", e.ADD(e.V("CHRB0"), 1))
+            e.call(c, "bank_prg32", b=e.MOD(e.IDIV(e.ARG("v"), 16), 4))  # PRG bits 5-4
+            e.call(c, "bank_chr8", b=e.MOD(e.ARG("v"), 4))               # CHR bits 1-0
+        # MMC3 (4)
+        with e.IF(b, e.EQ(e.V("MAPPER"), 4)) as c:
+            e.setv(c, "U1", e.IDIV(e.ARG("a"), 8192))   # 4=$8000 5=$A000 6=$C000 7=$E000
+            e.setv(c, "U2", e.MOD(e.ARG("a"), 2))       # 0 = even address, 1 = odd
+            cc = e.IFELSE(c, e.EQ(e.V("U1"), 4))
+            with cc as d:
+                ce = e.IFELSE(d, e.EQ(e.V("U2"), 0))
+                with ce as f:                            # $8000 even: bank select
+                    e.setv(f, "M3_SEL", e.MOD(e.ARG("v"), 8))          # bits 0-2
+                    e.setv(f, "M3_PRGMODE", e.MOD(e.IDIV(e.ARG("v"), 64), 2))  # bit 6
+                    e.setv(f, "M3_CHRINV", e.IDIV(e.ARG("v"), 128))            # bit 7
+                with ce.substack2() as f:                # $8001 odd: bank data
+                    # R6/R7 (PRG) only have 6 address lines -> value mod 64.
+                    cg = e.IFELSE(f, e.GT(e.V("M3_SEL"), 5))
+                    with cg as g:
+                        e.repl(g, "M3R", e.ADD(e.V("M3_SEL"), 1), e.MOD(e.ARG("v"), 64))
+                    with cg.substack2() as g:
+                        e.repl(g, "M3R", e.ADD(e.V("M3_SEL"), 1), e.ARG("v"))
+                e.call(d, "mmc3_apply")
+            with cc.substack2() as d:
+                cf = e.IFELSE(d, e.EQ(e.V("U1"), 5))
+                with cf as f:
+                    cg = e.IFELSE(f, e.EQ(e.V("U2"), 0))
+                    with cg as g:                        # $A000 even: mirroring
+                        # bit0 0 = vertical mirroring, 1 = horizontal mirroring.
+                        # MIRROR's own convention is 0=horizontal, 1=vertical, so
+                        # this is 1 - bit0. Four-screen carts have their own VRAM
+                        # and ignore this register entirely.
+                        with e.IF(g, e.NOT(e.EQ(e.V("MIRROR"), 4))) as h:
+                            e.setv(h, "MIRROR", e.SUB(1, e.MOD(e.ARG("v"), 2)))
+                    with cg.substack2() as g:            # $A001 odd: PRG-RAM protect
+                        e.setv(g, "M3_PRGRAMPROT", e.ARG("v"))
+                with cf.substack2() as f:
+                    ch = e.IFELSE(f, e.EQ(e.V("U1"), 6))
+                    with ch as g:
+                        ci = e.IFELSE(g, e.EQ(e.V("U2"), 0))
+                        with ci as h:                    # $C000 even: IRQ latch
+                            e.setv(h, "M3_IRQLATCH", e.ARG("v"))
+                        with ci.substack2() as h:        # $C001 odd: IRQ reload
+                            e.setv(h, "M3_IRQCNT", 0)
+                            e.setv(h, "M3_IRQRELOAD", 1)
+                    with ch.substack2() as g:
+                        cj = e.IFELSE(g, e.EQ(e.V("U2"), 0))
+                        with cj as h:                    # $E000 even: disable + ack
+                            e.setv(h, "M3_IRQEN", 0)
+                            e.setv(h, "IRQ_PENDING", 0)
+                        with cj.substack2() as h:        # $E001 odd: enable
+                            e.setv(h, "M3_IRQEN", 1)
         # MMC1 (1)
         with e.IF(b, e.EQ(e.V("MAPPER"), 1)) as c:
             cc = e.IFELSE(c, e.EQ(e.BIT7(e.ARG("v")), 1))
@@ -1463,6 +1608,11 @@ def phase8_main_loop(e):
             e.call(bgon, "render_bg_line_scrolled", sl=e.V("SCANLINE"))
         with e.IF(vis, e.EQ(e.MOD(e.IDIV(e.V("P_MASK"), 16), 2), 1)) as spon:
             e.call(spon, "render_sprites_line", sl=e.V("SCANLINE"))
+        # MMC3's IRQ counter clocks on PPU A12 rising edges, which only occur
+        # while rendering is enabled -- once per scanline in practice.
+        with e.IF(vis, e.OR(e.EQ(e.MOD(e.IDIV(e.V("P_MASK"), 8), 2), 1),
+                            e.EQ(e.MOD(e.IDIV(e.V("P_MASK"), 16), 2), 1))) as clk:
+            e.call(clk, "mmc3_clock_irq")
     with e.IF(s, e.EQ(e.V("SCANLINE"), 241)) as vb:
         e.setv(vb, "P_STATUS", e.BOR(e.V("P_STATUS"), 128))
         with e.IF(vb, e.EQ(e.MOD(e.IDIV(e.V("P_CTRL"), 128), 2), 1)) as nmion:

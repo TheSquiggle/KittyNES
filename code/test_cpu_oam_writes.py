@@ -138,8 +138,7 @@ for page in [0x00, 0x02, 0x07, 0xFF]:
             interp4.lists["PRG"][0x7F00 + i] = (i * 7 + 3) % 256  # $FF00 = PRG offset 0x7F00 (NROM, $8000 base)
         interp4.vars["MAPPER"] = 0
         interp4.vars["PRGBANKS"] = 2
-        interp4.vars["PRGB0"] = 0
-        interp4.vars["PRGB1"] = 1
+        interp4.lists["P8"] = [0, 1, 2, 3]
         interp4.vars["P_OAMADDR"] = 0
         bus_write(interp4, 0x4014, page)
         oam4 = interp4.lists["OAM"]
