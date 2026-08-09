@@ -91,11 +91,32 @@ check("triangle silenced by $4008=$80", i_(it.lists["APU_VOL"][2]), 0)
 w(0x4008, 0x7F)  # nonzero reload -> sounding
 check("triangle sounding after nonzero linear reload", i_(it.lists["APU_VOL"][2]) > 0, True)
 
-# ---- Noise: mode/period -> asset index, NOT pitch-shifted ----
-w(0x400E, 0x05)              # mode 0, period index 5 (=96)
-check("noise index = mode*16+period+1 (mode0, idx5)", i_(it.vars["APU_NOISEIDX"]), 6)
-w(0x400E, 0x80 | 0x05)       # mode 1, same period index
-check("noise index changes with mode bit (mode1, idx5)", i_(it.vars["APU_NOISEIDX"]), 22)
+# ---- Noise: mode selects the ASSET (1=noiseA, 2=noiseB); period is PITCH,
+# same technique as every other channel now (see apu_build.py's module
+# docstring -- the old per-period-asset design aliased badly at short
+# periods, which is what caused the "noise too low pitched" bug). ----
+NOISE_PERIOD_TABLE = [4, 8, 16, 32, 64, 96, 128, 160,
+                      202, 254, 380, 508, 762, 1016, 2034, 4068]
+BASE_NOISE_HZ = 1789773.0 / 254  # must match audio_assets.BASE_NOISE_PERIOD=254
+
+w(0x400E, 0x05)              # mode 0, period index 5 (real period value 96)
+check("noise index = mode+1 (mode0 -> noiseA=1)", i_(it.vars["APU_NOISEIDX"]), 1)
+expect_noise_hz = CPU_HZ / NOISE_PERIOD_TABLE[5]
+check("noise frequency = fCPU/period from the real period table",
+      abs(float(it.lists["APU_FREQ"][3]) - expect_noise_hz) < 0.01, True)
+
+w(0x400E, 0x80 | 0x05)       # mode 1, SAME period index -> asset changes, freq doesn't
+check("noise index changes with mode bit (mode1 -> noiseB=2)", i_(it.vars["APU_NOISEIDX"]), 2)
+check("frequency unchanged by a mode-only switch (same period index)",
+      abs(float(it.lists["APU_FREQ"][3]) - expect_noise_hz) < 0.01, True)
+
+w(0x400E, 0x80 | 0x00)       # mode 1, period index 0 (shortest, real period=4)
+expect_short_hz = CPU_HZ / NOISE_PERIOD_TABLE[0]
+check("noise period index 0 (shortest/highest freq) computed correctly",
+      abs(float(it.lists["APU_FREQ"][3]) - expect_short_hz) < 0.01, True)
+check("that frequency is now WAY above BASE_NOISE_HZ (reached via pitch, "
+      "not by rendering ultrasonic content directly)",
+      expect_short_hz / BASE_NOISE_HZ > 50, True)
 
 # ---- $4015 channel enable/disable ----
 w(0x4000, 0b00_0_1111)  # pulse1 loud again
@@ -111,6 +132,39 @@ before = list(it.lists["APU_FREQ"])
 w(0x4001, 0x00)  # pulse1 sweep -- not implemented, must be a safe no-op
 w(0x4017, 0x00)  # frame counter -- not implemented, must be a safe no-op
 check("unimplemented registers don't corrupt APU_FREQ", list(it.lists["APU_FREQ"]), before)
+
+# ---- Length counter: the actual fix for "notes play too long" ----
+LEN_TABLE = [10, 254, 20, 2, 40, 4, 80, 6, 160, 8, 60, 10, 14, 12, 26, 14,
+            12, 16, 24, 18, 48, 20, 96, 22, 192, 24, 72, 26, 16, 28, 32, 30]
+
+# $4003's top 5 bits (llll l) select the length-table index. v=0x08 -> index
+# IDIV(8,8)=1 -> table[1]=254 -> 254/120 seconds.
+w(0x4002, 0)
+w(0x4003, 0x08)
+expect_len = LEN_TABLE[1] / 120.0
+check("pulse1 length-table lookup (index 1 -> 254 half-frame ticks)",
+      abs(float(it.lists["APU_LENSEC"][0]) - expect_len) < 0.001, True)
+
+# A different index picks a different, independently-computed duration.
+w(0x4003, 0x08 | (5 << 3))  # index = IDIV(0x28,8)=5 -> table[5]=4
+expect_len2 = LEN_TABLE[5] / 120.0
+check("a different length index gives a different duration",
+      abs(float(it.lists["APU_LENSEC"][0]) - expect_len2) < 0.001, True)
+check("...and it's shorter than the first (254 vs 4 ticks)", expect_len2 < expect_len, True)
+
+# Triangle ($400B) and noise ($400F) use the same table independently.
+w(0x400A, 0)
+w(0x400B, 0x10)  # index=IDIV(0x10,8)=2 -> table[2]=20
+expect_tri_len = LEN_TABLE[2] / 120.0
+check("triangle length independent of pulse1's",
+      abs(float(it.lists["APU_LENSEC"][2]) - expect_tri_len) < 0.001, True)
+
+w(0x400F, 0x18)  # index=IDIV(0x18,8)=3 -> table[3]=2
+expect_noise_len = LEN_TABLE[3] / 120.0
+check("noise length independent of pulse1/triangle's",
+      abs(float(it.lists["APU_LENSEC"][3]) - expect_noise_len) < 0.001, True)
+check("pulse1's length untouched by triangle/noise length writes",
+      abs(float(it.lists["APU_LENSEC"][0]) - expect_len2) < 0.001, True)
 
 print("\n%s" % ("ALL APU INTEGRATION CHECKS PASSED" if not FAILURES
                 else "FAILURES: %r" % FAILURES))

@@ -1355,3 +1355,63 @@ decay/sustain, sweep units, length counters — `vvvv` is currently treated as
 a static volume, a documented simplification). `nes_emulator_audio.sb3` is a
 separate artifact from the main `nes_emulator.sb3`/`build_final.py` output;
 folding Phase 9 into the main build driver is a small remaining step.
+
+---
+
+## 2026-08-08 (cont'd 3) — Two real audio bugs fixed: noise pitch + note length
+
+User feedback after listening to the wired-up audio: (1) noise channel too
+low pitched, (2) every note sustains for the full 5-10s sample instead of
+stopping when it should.
+
+**Noise pitch — root cause confirmed and fixed.** The old design rendered
+32 separate noise assets (one per real hardware period) at a fixed ~48kHz.
+For short periods the LFSR's native toggle rate vastly exceeds 48kHz's
+Nyquist limit (period=4 -> ~447kHz native vs ~24kHz Nyquist) -- severe
+aliasing, which folds high-frequency content DOWN into the audible range.
+That's exactly "too low pitched," not a rendering preference. Fix: generate
+just 2 clean base assets (one per LFSR mode: `noiseA`=mode0, `noiseB`=mode1)
+at `BASE_NOISE_PERIOD=254` (native ~7047Hz, safely oversampled at 48kHz --
+alias-free by construction), then reach every other period via the SAME
+pitch-shift technique already used for pulse/triangle:
+`pitch = 120*log2(APU_FREQ[4]/BASE_NOISE_HZ)`. `$400E`'s mode bit now only
+selects WHICH asset (a restart); the period index is looked up in a new
+baked `NOISE_PERIOD_T` table and applied as pitch (an update, no restart
+needed). 37 assets -> 7; ~12MB -> ~3.5MB.
+
+**Notes sustaining too long — real hardware mechanism was simply never
+implemented.** The NES silences a note via its length counter, not by the
+game rewriting `$4015` after every note (many games rely on the counter
+auto-expiring). We had no length counter at all, so a note played until the
+*asset itself* looped or the CPU explicitly disabled the channel. Fix:
+added the verified 32-entry NES length-counter table (`LEN_T`), decode the
+top 5 bits of `$4003/$4007/$400B/$400F` into a duration
+(`table_value/120` seconds, ~half-frame clock rate), and -- critically --
+made every write to those "timer-high/length-load" registers trigger a
+clone RESTART (previously only duty changes did). Each fresh clone snapshots
+its note's length into a sprite-local `MY_LEN` variable (clones get their
+OWN independent copy of sprite-local vars, avoiding a shared-variable race
+if a new note arrives before the previous one's timer elapses) and runs a
+second concurrent "start as clone" thread that waits that long, then mutes.
+If a newer note interrupts first, the CPU's restart broadcast deletes that
+clone outright -- killing its waiting timer thread with it -- so there's no
+race to reconcile; a stale timer simply never fires.
+
+**Verification**: `test_apu.py` extended (BASE_NOISE_HZ consistency, the
+noise-pitch-not-aliasing regression guard, is_clone+MY_LEN var check,
+auto-mute wait-block presence) and `test_apu_integration.py` gained 11 new
+checks (noise mode-selects-asset/period-selects-pitch decoupling, and 6
+length-counter checks: table lookup correctness, independent durations
+across pulse/triangle/noise, no cross-channel interference) -- all driving
+the REAL generated block graph via interp.py. Full 15-suite regression green.
+
+Rebuilt and validated `nes_emulator.sb3`, `nes_emulator_nestress.sb3`,
+`nes_emulator_audio.sb3`, and the local-only `nes_emulator_smb_duckhunt.sb3`
+(now 3514 blocks, up from 3471, for the length-counter additions).
+
+Also this round: wired a solid black Stage backdrop into every build driver
+(`code/black_backdrop.py`) so the area outside the 256x240 NES image renders
+black instead of Scratch's default white. The other half of that request --
+stretching the viewport to fill the screen while preserving aspect ratio --
+is a player/embed-level behavior both Scratch and TurboWarp already provide
+automatically; there's no project-side flag for it in a .sb3.

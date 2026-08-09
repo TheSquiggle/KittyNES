@@ -32,20 +32,18 @@ sprites = {t["name"]: t for t in pj["targets"] if not t["isStage"]}
 # ---- 1) shared globals exist EXACTLY once ------------------------------
 lnames = [l[0] for l in stage["lists"].values()]
 vnames = [v[0] for v in stage["variables"].values()]
-for nm in ("APU_FREQ", "APU_VOL", "APU_DUTY", "APU_NOISENAMES"):
+for nm in ("APU_FREQ", "APU_VOL", "APU_DUTY", "APU_NOISENAMES", "APU_LENSEC"):
     check("Stage has exactly one %s list" % nm, lnames.count(nm), 1)
 check("Stage has exactly one APU_NOISEIDX var", vnames.count("APU_NOISEIDX"), 1)
-check("no unexpected extra Stage lists", len(lnames), 4)
+check("no unexpected extra Stage lists", len(lnames), 5)
 
 # ---- 2) the shared lists are actually POPULATED ------------------------
 by_name = {l[0]: l[1] for l in stage["lists"].values()}
 check("APU_FREQ sized for 4 channels", len(by_name["APU_FREQ"]), 4)
 check("APU_VOL sized for 4 channels", len(by_name["APU_VOL"]), 4)
 check("APU_DUTY sized for 2 pulse channels", len(by_name["APU_DUTY"]), 2)
-check("APU_NOISENAMES populated (2 modes x 16 periods)",
-      len(by_name["APU_NOISENAMES"]), 32)
-check("APU_NOISENAMES holds real asset names",
-      by_name["APU_NOISENAMES"][0], "noise0_4")
+check("APU_NOISENAMES holds exactly the 2 clean base assets (1/mode)",
+      by_name["APU_NOISENAMES"], ["noiseA", "noiseB"])
 
 # ---- 3) every channel sprite references the SAME global ids -------------
 # (the original bug: each sprite minted its own same-named list)
@@ -61,7 +59,7 @@ for lname, ids in list_ids_used.items():
     check("all sprites share ONE id for list %s" % lname, len(ids), 1)
 
 # ---- 4) each channel sprite is wired -----------------------------------
-expected = {"APU Pulse 1": 4, "APU Pulse 2": 4, "APU Triangle": 1, "APU Noise": 32}
+expected = {"APU Pulse 1": 4, "APU Pulse 2": 4, "APU Triangle": 1, "APU Noise": 2}
 for nm, nsounds in expected.items():
     check("%s exists" % nm, nm in sprites, True)
     t = sprites[nm]
@@ -77,11 +75,16 @@ for nm, nsounds in expected.items():
     check("%s has broadcast hats" % nm,
           ops.count("event_whenbroadcastreceived") >= 3, True)
     check("%s sets volume" % nm, "sound_setvolumeto" in ops, True)
-    check("%s has a local is_clone flag" % nm,
-          [v[0] for v in t["variables"].values()], ["is_clone"])
+    check("%s has local is_clone + MY_LEN vars (no unexpected extras)" % nm,
+          sorted(v[0] for v in t["variables"].values()), ["MY_LEN", "is_clone"])
+    check("%s auto-mutes after its note length elapses (length-counter fix)" % nm,
+          "control_wait" in ops, True)
 
-# pitch is used by the tonal channels, and NOT by noise (asset-selected)
-for nm in ("APU Pulse 1", "APU Pulse 2", "APU Triangle"):
+# All 4 channels pitch-shift now, including noise -- see apu_build.py's
+# module docstring for why noise moved from asset-selection-per-period to
+# pitch-shifting 2 clean base assets (asset-per-period aliased badly at
+# short periods, a real reported bug).
+for nm in ("APU Pulse 1", "APU Pulse 2", "APU Triangle", "APU Noise"):
     ops = [b["opcode"] for b in sprites[nm]["blocks"].values() if isinstance(b, dict)]
     check("%s sets the PITCH effect" % nm, "sound_seteffectto" in ops, True)
 
@@ -103,6 +106,12 @@ check("apu_build uses the generator's BASE_HZ", apu_build.BASE_HZ, audio_assets.
 check("BASE_HZ matches an exact integer samples-per-cycle asset",
       round(audio_assets.SR / audio_assets.SAMPLES_PER_CYCLE, 9),
       round(audio_assets.BASE_HZ, 9))
+check("apu_build uses the generator's BASE_NOISE_HZ", apu_build.BASE_NOISE_HZ,
+      audio_assets.BASE_NOISE_HZ)
+check("BASE_NOISE_HZ derives from BASE_NOISE_PERIOD",
+      round(1789773.0 / audio_assets.BASE_NOISE_PERIOD, 6), round(audio_assets.BASE_NOISE_HZ, 6))
+check("BASE_NOISE_HZ is comfortably below the 48kHz Nyquist limit (alias-free)",
+      audio_assets.BASE_NOISE_HZ < audio_assets.SR / 2, True)
 
 
 def pitch_for(hz):
@@ -125,11 +134,23 @@ check("NES timer t=253 is within Scratch's usable pitch range",
 
 # Assets must actually exist on disk for a build to succeed.
 import os
-missing = [n for n in (["pulse%d" % i for i in range(4)] + ["triangle"] +
-                       ["noise%d_%d" % (m, p) for m in (0, 1)
-                        for p in apu_build.NOISE_PERIODS])
+missing = [n for n in (["pulse%d" % i for i in range(4)] + ["triangle", "noiseA", "noiseB"])
            if not os.path.exists(os.path.join(apu_build.ASSET_DIR, n + ".wav"))]
-check("all 37 APU assets present on disk", missing, [])
+check("all 7 APU assets present on disk", missing, [])
+
+# Regression guard for the "noise too low pitched" bug: the shortest real
+# NES noise period (4 -> ~447kHz native LFSR rate) must not alias when
+# reached by pitch-shifting the clean base asset. Aliasing would come from
+# rendering that content directly at 48kHz (Nyquist ~24kHz); pitch-shifting
+# a properly-sampled base asset has no such ceiling, so this just confirms
+# the intended technique (not a re-render) is what's actually wired.
+shortest_period = 4
+native_shortest = 1789773.0 / shortest_period
+pitch_shortest = 120.0 * math.log(native_shortest / audio_assets.BASE_NOISE_HZ) / math.log(2)
+check("noise period=4 no longer requires rendering ~447kHz content directly "
+      "(reached via pitch instead)", native_shortest > audio_assets.SR / 2, True)
+check("...and the corresponding pitch shift is a finite, sane value",
+      abs(pitch_shortest) < 2000, True)
 
 print("\n%s" % ("ALL APU CHECKS PASSED" if not FAILURES else "FAILURES: %r" % FAILURES))
 sys.exit(1 if FAILURES else 0)

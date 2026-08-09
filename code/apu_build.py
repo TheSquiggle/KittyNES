@@ -25,7 +25,7 @@ ASSET_DIR = r"D:\KittyNES\assets\audio"
 # were actually rendered at, so pitch effect 0 reproduces it exactly. Importing
 # it (rather than re-deriving it here) means regenerating the assets at a
 # different rate/period can't silently put every note out of tune.
-from audio_assets import BASE_HZ  # noqa: E402
+from audio_assets import BASE_HZ, BASE_NOISE_HZ  # noqa: E402
 
 
 def wav_info(path):
@@ -87,9 +87,16 @@ NOISE_PERIODS = [4, 8, 16, 32, 64, 96, 128, 160,
 CH_PULSE1, CH_PULSE2, CH_TRIANGLE, CH_NOISE = 1, 2, 3, 4
 
 
-def _pitch_expr(e, hz_reporter):
-    """120 * log2(hz / BASE_HZ), via ln since Scratch has no log2."""
-    lnr = e._op("operator_mathop", NUM=e.DIVR(hz_reporter, BASE_HZ),
+def _pitch_expr(e, hz_reporter, base_hz):
+    """120 * log2(hz / base_hz), via ln since Scratch has no log2.
+
+    `base_hz` is whatever frequency the PLAYING asset was rendered at, so
+    pitch 0 reproduces it exactly: BASE_HZ for the tonal (pulse/triangle)
+    assets, BASE_NOISE_HZ for noise's two LFSR-mode assets (see
+    audio_assets.py's noise_base() for why noise needs its own base -- using
+    one alias-free reference asset per mode, pitch-shifted, instead of 32
+    separately-rendered (and mostly aliased) per-period assets)."""
+    lnr = e._op("operator_mathop", NUM=e.DIVR(hz_reporter, base_hz),
                 fields={"OPERATOR": ["ln"]})
     ln2 = e._op("operator_mathop", NUM=2, fields={"OPERATOR": ["ln"]})
     return e.MUL(e.DIVR(Reporter(lnr.block_id), Reporter(ln2.block_id)), 120)
@@ -105,10 +112,18 @@ def build_apu(proj, shared=None):
     Cross-sprite state lives in Stage-global lists (this is the one place
     `glob=True` is warranted -- the channel sprites must read values the NES
     sprite writes):
-        APU_FREQ[ch]  target frequency in Hz (0 = silent)
+        APU_FREQ[ch]  target frequency in Hz (0 = silent). For noise (ch=4)
+                      this holds the LFSR's native clock rate (CPU_HZ/period),
+                      pitch-shifted the same way as the tonal channels rather
+                      than looked up as a separate per-period asset.
         APU_VOL[ch]   0-100 channel volume
         APU_DUTY[ch]  pulse duty index 0-3 (pulse channels only)
-        APU_NOISEIDX  which noise asset (1-32) the noise channel should play
+        APU_NOISEIDX  which noise MODE asset (1=noiseA/mode0, 2=noiseB/mode1)
+                      the noise channel should play -- period no longer
+                      selects an asset, only pitch (see audio_assets.py's
+                      noise_base()/BASE_NOISE_HZ for why: the old
+                      one-asset-per-period design aliased badly at short
+                      periods, which is what caused noise to sound too low).
 
     Why both an "update" and a "restart" broadcast per channel: `play sound
     until done` blocks for the whole multi-second asset, so a plain forever
@@ -122,15 +137,14 @@ def build_apu(proj, shared=None):
         ("APU Pulse 1", CH_PULSE1, ["pulse%d" % i for i in range(4)]),
         ("APU Pulse 2", CH_PULSE2, ["pulse%d" % i for i in range(4)]),
         ("APU Triangle", CH_TRIANGLE, ["triangle"]),
-        ("APU Noise", CH_NOISE, ["noise%d_%d" % (m, p)
-                                 for m in (0, 1) for p in NOISE_PERIODS]),
+        ("APU Noise", CH_NOISE, ["noiseA", "noiseB"]),
     ]
 
     bc_update = {ch: proj.add_broadcast("apu_update_%d" % ch) for _, ch, _ in chans}
     bc_restart = {ch: proj.add_broadcast("apu_restart_%d" % ch) for _, ch, _ in chans}
     bc_stop = proj.add_broadcast("apu_stop_all")
 
-    noise_names = ["noise%d_%d" % (m, p) for m in (0, 1) for p in NOISE_PERIODS]
+    noise_names = ["noiseA", "noiseB"]  # index 1=mode0, 2=mode1
     # Shared Stage-globals are created ONCE and then injected into each
     # sprite's name->id map. Calling e.lst(..., glob=True) per sprite would
     # mint a SEPARATE list per sprite that merely shares a display name, so
@@ -142,12 +156,14 @@ def build_apu(proj, shared=None):
     # SAME list/var, not just the same display name.
     shared_lists = {"APU_FREQ": shared["APU_FREQ"], "APU_VOL": shared["APU_VOL"],
                     "APU_DUTY": shared["APU_DUTY"],
-                    "APU_NOISENAMES": shared["APU_NOISENAMES"]} if shared else {}
+                    "APU_NOISENAMES": shared["APU_NOISENAMES"],
+                    "APU_LENSEC": shared["APU_LENSEC"]} if shared else {}
     shared_vars = {"APU_NOISEIDX": shared["APU_NOISEIDX"]} if shared else {}
 
     def _share(e):
         for nm, items in (("APU_FREQ", [0, 0, 0, 0]), ("APU_VOL", [0, 0, 0, 0]),
-                          ("APU_DUTY", [0, 0]), ("APU_NOISENAMES", noise_names)):
+                          ("APU_DUTY", [0, 0]), ("APU_NOISENAMES", noise_names),
+                          ("APU_LENSEC", [0, 0, 0, 0])):
             if nm not in shared_lists:
                 shared_lists[nm] = e.lst(nm, items, glob=True)
             else:
@@ -182,8 +198,8 @@ def build_apu(proj, shared=None):
 
         # ---- the sounding clone ----
         if ch == CH_NOISE:
-            # Noise is selected by ASSET, not by pitch -- the LFSR pattern
-            # differs per period, so pitch-shifting one asset would be wrong.
+            # Selected by MODE only now (1=noiseA, 2=noiseB) -- period is
+            # pitch, same as every other channel. See module docstring.
             sound_sel = e.IT("APU_NOISENAMES", e.V("APU_NOISEIDX"))
         elif ch in (CH_PULSE1, CH_PULSE2):
             # +1: APU_DUTY holds 0-3, asset names are pulse0..pulse3.
@@ -202,13 +218,31 @@ def build_apu(proj, shared=None):
                 body.stack("sound_playuntildone", SOUND_MENU=sound_sel)
         s2.finalize()
 
+        # ---- auto-mute timer: a SEPARATE concurrent "start as clone"
+        # script (Scratch runs every matching hat as its own thread within
+        # the same clone instance). Snapshots the note's length in a
+        # sprite-local var -- clones get their OWN independent copy of
+        # sprite-local variables, so concurrent notes on the same channel
+        # can't stomp each other's snapshot the way a shared/global var
+        # would. If a NEWER note arrives before this timer elapses, the CPU
+        # broadcasts a restart, which deletes THIS clone outright -- killing
+        # this thread along with it -- so there's no race to reconcile, this
+        # timer simply never fires for a superseded note. This is the actual
+        # fix for "sounds play too long": real hardware auto-mutes via a
+        # length counter, which nothing here implemented before now. ----
+        s2b = e.script("control_start_as_clone")
+        e.setv(s2b, "MY_LEN", e.IT("APU_LENSEC", ch))
+        s2b.stack("control_wait", DURATION=e.V("MY_LEN"))
+        s2b.stack("sound_setvolumeto", VOLUME=0)
+        s2b.finalize()
+
         # ---- update hat: applies pitch+volume WITHOUT interrupting playback ----
         s3 = e.script("event_whenbroadcastreceived",
                       fields={"BROADCAST_OPTION": ["apu_update_%d" % ch, bc_update[ch]]})
-        if ch != CH_NOISE:
-            s3.stack("sound_seteffectto",
-                     VALUE=_pitch_expr(e, e.IT("APU_FREQ", ch)),
-                     fields={"EFFECT": ["PITCH"]})
+        base_hz = BASE_NOISE_HZ if ch == CH_NOISE else BASE_HZ
+        s3.stack("sound_seteffectto",
+                 VALUE=_pitch_expr(e, e.IT("APU_FREQ", ch), base_hz),
+                 fields={"EFFECT": ["PITCH"]})
         s3.stack("sound_setvolumeto", VOLUME=e.IT("APU_VOL", ch))
         s3.finalize()
 

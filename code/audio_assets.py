@@ -88,13 +88,22 @@ def lfsr_cycle_len(mode):
 def noise(mode, period, amp=0.22):
     """Real 15-bit NES noise LFSR, resampled to a practical rate.
 
+    SUPERSEDED for runtime use by noise_base() below -- kept only because the
+    aliasing bug this docstring originally warned wasn't a problem turned out
+    to BE the exact cause of a real reported bug ("the noise channel is too
+    low pitched"). Explaining that for the record:
+
+    This function renders EVERY period at a fixed-ish sample rate up to SR
+    (48kHz). For short periods (fast noise, e.g. period=4) the LFSR's native
+    toggle rate is CPU_HZ/4 ~= 447kHz -- vastly above 48kHz's Nyquist limit
+    (24kHz). That's severe aliasing: high-frequency content folds DOWN into
+    the audible range as spurious low-frequency content, which is exactly
+    "too low pitched," not a rendering preference. Rendering 32 separate
+    assets, most of them aliased, was the root design mistake -- not a bug in
+    this specific averaging loop.
+
     Feedback = bit0 XOR bit1 (mode 0, 'long') or bit0 XOR bit6 (mode 1,
-    'short'/tonal). Output is bit0 inverted. The asset holds a whole number of
-    full LFSR cycles -- so the loop seam lands exactly where the sequence
-    repeats naturally -- and is tiled up to at least MIN_ASSET_SECS so the
-    `play until done` re-trigger stays rare. Low-rate noise gets a lower
-    sample rate so long assets don't balloon project size; its content
-    bandwidth is low, so that costs no audible fidelity.
+    'short'/tonal). Output is bit0 inverted.
     """
     native = CPU_HZ / period                       # LFSR steps per second
     rate = int(max(8000, min(SR, native * 2.2)))   # Nyquist headroom, capped
@@ -107,6 +116,43 @@ def noise(mode, period, amp=0.22):
     out = []
     acc = 0.0
     step_per_sample = native / rate
+    cur = 0
+    for _ in range(nsamples):
+        acc += step_per_sample
+        while acc >= 1.0:
+            acc -= 1.0
+            bit = (reg & 1) ^ ((reg >> (6 if mode else 1)) & 1)
+            reg = (reg >> 1) | (bit << 14)
+            cur = (~reg) & 1
+        out.append((amp * 32767) if cur else (-amp * 32767))
+    return out, rate
+
+
+# The period this project's noise channel is pitch-shifted RELATIVE TO (see
+# apu_wire.py/apu_build.py). Its native LFSR toggle rate --
+# CPU_HZ/BASE_NOISE_PERIOD ~= 7047 Hz -- sits safely below the 48kHz render
+# rate's Nyquist limit, so the base asset is genuinely alias-free. Every
+# other period is reached by pitch-shifting THIS clean asset (same technique
+# as pulse/triangle), not by re-rendering at whatever rate that period's
+# native frequency would need -- which is what caused the original bug.
+BASE_NOISE_PERIOD = 254
+BASE_NOISE_HZ = CPU_HZ / BASE_NOISE_PERIOD
+
+
+def noise_base(mode, amp=0.22):
+    """One alias-free asset per LFSR mode, rendered at BASE_NOISE_PERIOD.
+    Loops on a whole number of full LFSR cycles, tiled to MIN_ASSET_SECS."""
+    native = BASE_NOISE_HZ
+    rate = SR
+    cyclen = lfsr_cycle_len(mode)
+    one_secs = cyclen / native
+    reps = max(1, math.ceil(MIN_ASSET_SECS / one_secs))
+    nsamples = int(one_secs * reps * rate)
+
+    reg = 1
+    out = []
+    acc = 0.0
+    step_per_sample = native / rate   # < 1.0 here since rate > native: OVERsampled, alias-free
     cur = 0
     for _ in range(nsamples):
         acc += step_per_sample
@@ -134,15 +180,23 @@ def main():
     total += n
     manifest.append(("triangle.wav", SR, TRI_CYCLES * SAMPLES_PER_CYCLE, n))
 
-    for mode in (0, 1):
-        for period in NOISE_PERIODS:
-            samples, rate = noise(mode, period)
-            name = f"noise{mode}_{period}.wav"
-            n = write_wav(os.path.join(outdir, name), samples, rate)
-            total += n
-            manifest.append((name, rate, len(samples), n))
+    # Two CLEAN base assets (one per LFSR mode), alias-free by construction
+    # since they're rendered at BASE_NOISE_PERIOD's native rate (~7047Hz),
+    # safely below the 48kHz Nyquist limit. Every other period is reached at
+    # runtime by pitch-shifting these, not by rendering 32 separate assets --
+    # see noise_base()'s docstring for why the old per-period approach caused
+    # a real reported bug ("noise channel is too low pitched": severe
+    # aliasing at short periods folding high frequencies down into audible
+    # low ones).
+    for mode, name in ((0, "noiseA"), (1, "noiseB")):
+        samples, rate = noise_base(mode)
+        n = write_wav(os.path.join(outdir, name + ".wav"), samples, rate)
+        total += n
+        manifest.append((name + ".wav", rate, len(samples), n))
 
     print(f"BASE_HZ = {BASE_HZ!r}  (pitch = 120*log2(hz/BASE_HZ))")
+    print(f"BASE_NOISE_HZ = {BASE_NOISE_HZ!r}  (period={BASE_NOISE_PERIOD}, "
+          f"noise pitch = 120*log2(APU_FREQ/BASE_NOISE_HZ))")
     print(f"{len(manifest)} assets, {total/1048576:.2f} MB total\n")
     for name, rate, ns, nbytes in manifest:
         print(f"  {name:22} rate={rate:5}  samples={ns:8}  {ns/rate:7.3f}s  {nbytes/1024:8.1f} KB")
