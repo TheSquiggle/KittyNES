@@ -1415,3 +1415,39 @@ black instead of Scratch's default white. The other half of that request --
 stretching the viewport to fill the screen while preserving aspect ratio --
 is a player/embed-level behavior both Scratch and TurboWarp already provide
 automatically; there's no project-side flag for it in a .sb3.
+
+---
+
+## 2026-08-08 (cont'd 4) — Famidash: extensive re-investigation, root cause still not found
+
+User asked to "make it work." Directly re-measured every specific hypothesis
+from the earlier session rather than trust prior conclusions:
+
+- Confirmed the earlier "cycle accounting" theory is still correctly ruled
+  out (re-verified independently).
+- Traced real NMI dispatch timing with a new tool (`code/diag_regiondetect.py`):
+  exact NTSC cadence (29778-29782 cycles between NMIs), confirming interrupt
+  timing itself is right.
+- Confirmed this ROM uses four-screen mirroring at runtime (`MIRROR=4`) and
+  that `nt_index`'s four-screen branch is structurally correct (4096-entry
+  VRAM, each nametable mapped to its own page).
+- Confirmed nametable writes DO happen (4096 writes in 100 frames = exactly
+  4x1024 bytes, i.e. a VRAM-clear routine at boot -- not a bug, just not yet
+  the real content).
+- Confirmed the CPU is not stuck (12,651 distinct PCs over 100 frames) and
+  CHR data loaded correctly (non-zero bytes present).
+- Rendering does get enabled (`P_MASK=6`) by ~frame 87.
+- Despite all of the above checking out, pushed frame rendering to 220
+  frames (~3.7 game-seconds) and the framebuffer remains a single solid
+  color throughout -- no real tile content ever appears in that window.
+
+**Could not determine whether this is a real remaining bug or just a longer
+boot sequence than smaller ROMs needed**, because the Python verification
+harness runs ~2-4 real seconds PER SIMULATED FRAME, making it impractical to
+push much further this way (reaching 10 game-seconds would take on the
+order of an hour). Documented honestly in `docs/famidash_investigation.md`
+rather than claim a fix without proof. Real TurboWarp runs vastly faster and
+is the practical way to actually resolve this -- rebuilt
+`progress/nes_emulator_famidash.sb3` (gitignored, homebrew ROM baked in,
+3514 blocks, validates clean) with all of this session's fixes for the user
+to test directly.
