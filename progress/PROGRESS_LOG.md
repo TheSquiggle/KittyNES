@@ -1236,3 +1236,69 @@ Diagnostic scripts kept: `code/diag_famidash.py` (per-frame state census),
 `code/diag_ppuwrites.py` (PPU write census by register/region),
 `code/diag_pc.py` (hot-PC histogram for a single frame — this is the one that
 cracked it).
+
+---
+
+## 2026-08-08 (cont'd) — Session wrap: verification, cycle-accounting audit, artifacts
+
+Independently re-verified the MMC3/NES2.0/four-screen work landed by another
+agent: all 14 `test_*.py` suites pass (36+mappers+63 MMC3+bg+sprites×2+
+CHR-bank+palette+pen-flush+loader+main-loop+OAM-writes+multiconsole+APU).
+
+**Corrected a diagnosis, with direct measurement.** The MMC3 investigation
+concluded Famidash's blank screen was caused by a ~5000-cycle/frame CPU
+billing gap. Built `code/diag_cycles.py` to measure REAL per-opcode and
+per-frame cycle billing (not model it) by hooking `interp.py`'s executor.
+Result: every opcode's charged cycles matched the official 6502 table exactly
+(zero mismatches on both AccuracyCoin and Famidash's actual hot instructions,
+branch-taken +1 accounting included), and total cycles/frame landed within
+±5 of the exact NTSC target (29780.5) on both ROMs. The cycle-accounting
+theory does not hold up under measurement — see
+`docs/cycle_accounting_audit.md`. Famidash's real root cause remains open;
+likely candidates are a wrong per-iteration-cost assumption in the original
+diagnosis or genuine loop-internal branching, neither chased down yet.
+
+**Rebuilt and validated all primary artifacts** at 3212 blocks (post-MMC3):
+`progress/nes_emulator.sb3`, `nes_emulator_nestress.sb3`,
+`nes_emulator_accuracycoin.sb3` — all structurally clean.
+
+**Also this session:**
+- Fixed the mapper 66 PRG/CHR bit-field swap bug (see the earlier entry) by
+  rendering the framebuffer to PNG and comparing directly against a user
+  screenshot, then tracing real mapper writes — found the true root cause
+  after 4 rounds of targeted-but-ultimately-clean unit testing had missed it.
+- Refactored emulator state from Stage-global to sprite-local by default
+  (`Emu.var/lst(..., glob=False)`), so multiple consoles can coexist in one
+  project without name collisions. Proved it with `test_multiconsole.py`
+  building two independent NES cores in one project.
+- Studied a third-party reference emulator (gitignored, never redistributed)
+  to resolve the audio click-train dead-end: real fix is a sustained sample
+  + PITCH effect, not a faster click-train. Built the asset generator
+  (`code/audio_assets.py`, 37 WAVs, LFSR-verified against nesdev.org) and the
+  full 4-channel APU sprite graph (`code/apu_build.py`) with broadcast-based
+  update/restart wiring. Caught 3 real bugs building it (duplicated globals
+  per sprite, an empty-before-declared shared list, a nonexistent sensing_of
+  property) — none visible to the structural validator, all locked in by
+  `code/test_apu.py`. APU is NOT yet wired to `$4000`-`$4013` CPU writes —
+  `docs/apu_registers.md` (spec-verified against nesdev.org) documents the
+  exact integration plan.
+- Validated end-to-end against AccuracyCoin, a real accuracy-test ROM:
+  renders its menu pixel-legibly, accepts real simulated controller input
+  through the genuine `$4016` path, and runs its test suite to completion.
+  Documented honestly that this proves execution reaches that point, not
+  that those specific tests (many covering illegal opcodes) pass.
+- Added mapper 66 to the multi-console composability check and confirmed the
+  new fine-grained bank-window refactor (P8/C1) is behavior-preserving on
+  SMB+Duck Hunt via byte-identical framebuffer PNGs before/after.
+
+**Next highest-value work, in rough priority order:**
+1. Wire the APU to real `$4000`-`$4013` register writes (architecture and
+   assets are ready — see `docs/apu_registers.md`'s integration plan).
+2. Find Famidash's actual blocker (now known NOT to be cycle accounting).
+3. Implement the common undocumented/illegal 6502 opcodes (`LAX`, `SAX`,
+   `SLO`, `RLA`, `SRE`, `RRA`, `DCP`, `ISC` are cheap — combinations of
+   already-implemented operations) — real games use some of these, and
+   AccuracyCoin's test suite is mostly measuring this gap.
+4. A first real Scratch/TurboWarp playtest of the current build (still not
+   done in this session — everything is verified against `interp.py`, the
+   Python re-implementation, not the real Scratch VM).

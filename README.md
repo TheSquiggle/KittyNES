@@ -2,16 +2,42 @@
 
 A full NES (Nintendo Entertainment System) emulator built as a real, loadable
 `.sb3` Scratch 3.0 project — pure block logic, no TurboWarp JS extension.
+Each console is fully self-contained in **one sprite** (all state sprite-local
+except explicitly cross-sprite APU state) — see
+[`progress/PROGRESS_LOG.md`](progress/PROGRESS_LOG.md)'s "one sprite = one
+emulator" entry and `code/test_multiconsole.py`, which builds two complete,
+independent NES cores in a single project as proof.
 
-**v1 status: all 8 planned phases done and verified**, plus real-ROM smoke
-tests against `NEStress.NES` (a well-known CPU/PPU/input test ROM — 50M+
-interpreter steps across 7+ full frames, framebuffer fully populated,
-NMI/vblank firing and serviced correctly) and a real user-owned copy of
-"Super Mario Bros. + Duck Hunt (USA)" (mapper 66/GxROM — 60M+ steps, stable
-fully-rendered framebuffer by frame 11, live in-game mapper bank-switching
-observed) — see `docs/real_rom_testing.md`. Definitive artifact:
-[`progress/nes_emulator.sb3`](progress/nes_emulator.sb3). To build a `.sb3`
-for a specific ROM: `python code/build_final.py path\to\game.nes`.
+**Status: 8 core phases done and verified, plus mappers 0/1/2/3/4/66,
+NES 2.0 headers, four-screen mirroring, and Phase 9 (APU) audio
+architecture built and structurally verified (not yet wired to CPU register
+writes).**
+
+Real-ROM validation (see `docs/real_rom_testing.md`,
+`docs/accuracycoin_results.md`):
+- **AccuracyCoin** (mapper 0): boots, renders its test menu pixel-legibly,
+  responds to real simulated controller input, and runs its CPU-behavior
+  test suite to completion (test 48+) without hanging. Many of those tests
+  cover undocumented/illegal opcodes we don't implement — expected to fail,
+  documented honestly, not glossed over.
+- **NEStress.NES** (mapper 0): 50M+ interpreter steps, framebuffer fully
+  populated, NMI/vblank firing correctly across 7+ frames.
+- A real user-owned "Super Mario Bros. + Duck Hunt" (mapper 66/GxROM): a
+  real bug was found and fixed here — the GxROM PRG/CHR bit fields were
+  swapped, pairing one game's code with the other's tileset. Found by
+  rendering the framebuffer to PNG and comparing pixel-for-pixel against a
+  user screenshot, not by more unit tests. See the mapper-66 postmortem in
+  `progress/PROGRESS_LOG.md` for the full methodology.
+- A homebrew MMC3 ROM: mapper 4 implemented and its scanline IRQ verified
+  firing/servicing correctly on real ROM data, but the game still renders
+  blank — root-caused to the game's own region-detection routine landing on
+  the wrong branch, NOT a cycle-accounting bug (that was checked directly
+  and ruled out — see `docs/cycle_accounting_audit.md`). Real remaining
+  cause not yet found; documented as open, not hidden.
+
+Definitive artifact: [`progress/nes_emulator.sb3`](progress/nes_emulator.sb3).
+To build a `.sb3` for a specific ROM: `python code/build_final.py path\to\game.nes`,
+or run `build_from_rom.py` for a file-picker GUI.
 
 ## Directory layout
 
