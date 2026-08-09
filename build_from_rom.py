@@ -44,6 +44,7 @@ def main():
     from lib import Emu
     import build_core as BC
     import ines_loader as INES
+    from black_backdrop import set_black_backdrop
 
     print(f"Building with ROM: {nes_path}")
     e = Emu("NES")
@@ -59,6 +60,7 @@ def main():
         nes_bytes = f.read()
     INES.load_rom_into_emu(e, nes_bytes)
 
+    set_black_backdrop(e.proj)
     print("total blocks:", len(e.t.blocks))
     e.save(out_path)
     print("saved", out_path)

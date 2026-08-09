@@ -17,6 +17,7 @@ import build_core as BC
 import ines_loader as INES
 import apu_build
 import apu_wire
+from black_backdrop import set_black_backdrop
 
 rom = sys.argv[1] if len(sys.argv) > 1 else None
 out = sys.argv[2] if len(sys.argv) > 2 else r"D:\KittyNES\progress\nes_emulator_audio.sb3"
@@ -86,6 +87,7 @@ else:
     INES.load_rom_into_emu(e, synth)
     print("loaded synthetic test ROM")
 
+set_black_backdrop(e.proj)
 print("total blocks (NES sprite):", len(e.t.blocks))
 e.save(out)
 print("saved", out)

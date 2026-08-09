@@ -16,6 +16,7 @@ sys.path.insert(0, r"D:\KittyNES\code")
 from lib import Emu
 import build_core as BC
 import ines_loader as INES
+from black_backdrop import set_black_backdrop
 
 nes_path = sys.argv[1] if len(sys.argv) > 1 else None
 out_path = sys.argv[2] if len(sys.argv) > 2 else r"D:\KittyNES\progress\nes_emulator.sb3"
@@ -39,6 +40,7 @@ else:
     synth = INES.build_synthetic_nes(prg_banks=2, chr_banks=1, mapper=0, mirror=0)
     INES.load_rom_into_emu(e, synth)
 
+set_black_backdrop(e.proj)
 print("total blocks:", len(e.t.blocks))
 e.save(out_path)
 print("saved", out_path)
