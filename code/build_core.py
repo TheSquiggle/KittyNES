@@ -171,6 +171,14 @@ def bank_helpers(e):
 def phase2_bus(e):
     bank_helpers(e)
 
+    # bus_write always routes $4000-$4015 to apu_write (see below). If the
+    # caller wired the real one via apu_wire.wire_apu() BEFORE calling
+    # phase2_bus, e.procs already has it and this is a no-op; callers that
+    # don't care about audio (every test file, and any build that skips
+    # Phase 9) get a harmless stub instead of a KeyError at call time.
+    if "apu_write" not in e.procs:
+        e.defproc("apu_write", ["a", "v"]).finalize()
+
     # ---------------- chr_read / chr_write --------------------------
     # Eight independent 1K windows: C1[a div 1024] * 1024 + (a mod 1024).
     s = e.defproc("chr_read", ["a"])
@@ -541,6 +549,11 @@ def phase2_bus(e):
                 with cd.substack2() as f:
                     with e.IF(f, e.EQ(e.ARG("a"), 16406)) as g:   # $4016 strobe
                         e.call(g, "ctrl_write", v=e.ARG("v"))
+                    with e.IF(f, e.NOT(e.EQ(e.ARG("a"), 16406))) as g:
+                        # $4000-$4013 (APU regs), $4015 (channel enable),
+                        # and the rest ($4001/4005/4009/400D/400F/4010-4013/
+                        # 4017) which apu_write intentionally no-ops.
+                        e.call(g, "apu_write", a=e.ARG("a"), v=e.ARG("v"))
             with c3.substack2() as d:
                 e.call(d, "mapper_write", a=e.ARG("a"), v=e.ARG("v"))
     s.finalize()

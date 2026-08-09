@@ -1302,3 +1302,56 @@ diagnosis or genuine loop-internal branching, neither chased down yet.
 4. A first real Scratch/TurboWarp playtest of the current build (still not
    done in this session — everything is verified against `interp.py`, the
    Python re-implementation, not the real Scratch VM).
+
+---
+
+## 2026-08-08 (cont'd 2) — Phase 9 COMPLETE: APU wired to real CPU writes
+
+Finished the integration that was left open at the last session wrap:
+`code/apu_wire.py` implements `apu_write`, the custom block that decodes real
+`$4000`-`$4015` CPU writes (per `docs/apu_registers.md`'s verified spec) and
+updates the shared `APU_FREQ`/`APU_VOL`/`APU_DUTY`/`APU_NOISEIDX` state the
+channel sprites read, broadcasting `apu_update_<ch>` (pitch/volume, doesn't
+interrupt playback) or `apu_restart_<ch>` (duty/noise-period changes, which
+must respawn the clone since `play until done` can't be interrupted).
+
+**Build-order constraint discovered and fixed:** this Emu model's `e.call()`
+does an immediate dict lookup (`self.procs[name]`) — no forward declarations.
+`bus_write` now unconditionally routes to `apu_write`, which broke every
+existing test file that builds `phase2_bus` without first wiring real audio.
+Fixed by having `phase2_bus` define a harmless no-op `apu_write` stub only if
+one doesn't already exist (`if "apu_write" not in e.procs`) — real wiring via
+`apu_wire.wire_apu()`, when done first, takes precedence.
+
+**One real bug found and fixed** (not in the emulator — in `apu_build.py`'s
+`build_apu()`, which had a `shared=` parameter that was silently ignored,
+so passing pre-created global ids from the NES core did nothing and channel
+sprites would have minted their own duplicate globals again). Fixed by
+actually seeding `shared_lists`/`shared_vars` from the passed-in ids.
+
+**Verified with `code/test_apu_integration.py`** (18 checks, calling the real
+`apu_write` proc via `interp.py` against the actual generated graph): duty
+and volume decode correctly from `$4000`/`$4004`, pulse frequency matches
+`fCPU/(16*(t+1))` to within 0.01Hz, the `t<8` silence rule, pulse channels
+are independent, triangle divides by 32 (not 16) and its linear-counter
+silence rule, noise channel/mode selection (`mode*16+period+1`, NOT
+pitch-shifted), `$4015` enable/disable silencing all four channels, and that
+unimplemented registers ($4001 sweep, $4017 frame counter) are safe no-ops
+that don't corrupt state. **Caught one bug in the test itself while writing
+it**: an 8-bit `DDlc.vvvv` register literal missing the `l` bit shifted duty
+into the wrong position — a reminder that hand-written binary test literals
+need the same scrutiny as the generator code.
+
+Full 15-suite regression run green after the fix. Rebuilt
+`progress/nes_emulator_audio.sb3` (3471 blocks — NES core + 4 wired channel
+sprites), validates structurally clean, and independently confirmed: each
+shared global (`APU_FREQ`/`APU_VOL`/`APU_DUTY`/`APU_NOISENAMES`) exists
+exactly once on the Stage and every sprite that references it uses the same
+list id (not just the same name) — the specific bug class this whole
+architecture is fragile to.
+
+**What's still NOT done:** the frame sequencer (proper envelope
+decay/sustain, sweep units, length counters — `vvvv` is currently treated as
+a static volume, a documented simplification). `nes_emulator_audio.sb3` is a
+separate artifact from the main `nes_emulator.sb3`/`build_final.py` output;
+folding Phase 9 into the main build driver is a small remaining step.

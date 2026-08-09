@@ -135,8 +135,15 @@ def build_apu(proj, shared=None):
     # sprite's name->id map. Calling e.lst(..., glob=True) per sprite would
     # mint a SEPARATE list per sprite that merely shares a display name, so
     # the channels would never see what the NES core writes.
-    shared_lists = {}
-    shared_vars = {}
+    #
+    # If `shared` is given (ids already created elsewhere -- e.g. by the NES
+    # core, so apu_write can reference them directly), seed from it instead
+    # of minting new ones, so the channel sprites and the CPU agree on the
+    # SAME list/var, not just the same display name.
+    shared_lists = {"APU_FREQ": shared["APU_FREQ"], "APU_VOL": shared["APU_VOL"],
+                    "APU_DUTY": shared["APU_DUTY"],
+                    "APU_NOISENAMES": shared["APU_NOISENAMES"]} if shared else {}
+    shared_vars = {"APU_NOISEIDX": shared["APU_NOISEIDX"]} if shared else {}
 
     def _share(e):
         for nm, items in (("APU_FREQ", [0, 0, 0, 0]), ("APU_VOL", [0, 0, 0, 0]),
