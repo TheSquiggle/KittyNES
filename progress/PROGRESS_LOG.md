@@ -1451,3 +1451,46 @@ is the practical way to actually resolve this -- rebuilt
 `progress/nes_emulator_famidash.sb3` (gitignored, homebrew ROM baked in,
 3514 blocks, validates clean) with all of this session's fixes for the user
 to test directly.
+
+---
+
+## 2026-08-08 (cont'd 5) — Real bug: audio clones spawned at default volume, causing constant noise
+
+User reported the Famidash build "sits there and makes noise" (screen
+frozen, audio playing continuously). Traced actual APU register writes on
+Famidash: the game IS calling real, sensible sound-engine code every frame
+(setting duty/volume/length/enable across all 4 channels, all decoding to
+sane, mostly-zero-volume values per our logic) -- proof the CPU is alive and
+doing real audio work, not stuck reading garbage.
+
+**Root cause**: the channel clone's `control_start_as_clone` script never
+set its own pitch/volume -- it relied ENTIRELY on the separate
+`apu_update_<ch>` broadcast (sent right after `apu_restart_<ch>`) to arrive
+and set the correct value. Scratch gives a freshly-created clone a DEFAULT
+volume (100%) until something explicitly changes it, and broadcast delivery
+order relative to a same-tick clone spawn isn't something this architecture
+can rely on. Since the length-counter fix (previous entry) made every note
+restart the clone, a game that plays notes frequently -- exactly what
+Famidash's real register-write trace shows -- would get a full-volume blip
+on EVERY restart, sounding like continuous noise rather than the intended
+mostly-silent/quiet audio.
+
+**Fix**: the clone now sets its own `sound_seteffectto`(PITCH) and
+`sound_setvolumeto` immediately at spawn, reading the already-correct
+`APU_FREQ`/`APU_VOL` (the CPU writes these before broadcasting restart, so
+the value is right by the time the clone's hat fires) -- before entering
+the playback loop. This removes the dependency on broadcast-ordering
+entirely; the separate `apu_update_<ch>` broadcast still exists for
+mid-sample pitch/volume changes that don't need a restart.
+
+**Verification**: new checks in `test_apu.py` walk the ACTUAL block chain
+from each channel's `control_start_as_clone` hat and confirm
+`sound_setvolumeto`/`sound_seteffectto` appear before the `control_forever`
+loop containing `sound_playuntildone` -- not just "somewhere in the
+sprite," the real execution order. All pass on all 4 channels. Full
+15-suite regression green. Rebuilt and validated `nes_emulator_famidash.sb3`,
+`nes_emulator_audio.sb3`, and `nes_emulator_smb_duckhunt.sb3`.
+
+Whether this also explains Famidash's still-blank screen is unknown --
+this fix is audio-only and doesn't touch rendering. The famidash_investigation.md
+findings on the visual side stand as previously documented.

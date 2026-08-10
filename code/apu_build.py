@@ -209,6 +209,25 @@ def build_apu(proj, shared=None):
 
         s2 = e.script("control_start_as_clone")
         e.setv(s2, "is_clone", 1)
+        # Set pitch/volume HERE, immediately at spawn, rather than relying
+        # solely on the separate apu_update_<ch> broadcast to arrive in
+        # time. A freshly-created clone otherwise starts at whatever
+        # volume/pitch Scratch defaults a new clone to (100%) until that
+        # broadcast's receiving script gets its turn -- broadcast delivery
+        # order relative to a same-tick clone spawn isn't something this
+        # architecture can rely on. Since notes now restart the clone on
+        # every $4003/$4007/$400B/$400F write (the length-counter fix), a
+        # real reported symptom -- audio "just sits there and makes noise"
+        # on a game that restarts notes constantly -- traces directly to
+        # this: a full-volume blip on every single restart. Reading
+        # APU_FREQ/APU_VOL here closes that gap; the CPU already writes
+        # them before broadcasting restart, so the value is correct by the
+        # time this hat fires.
+        base_hz = BASE_NOISE_HZ if ch == CH_NOISE else BASE_HZ
+        s2.stack("sound_seteffectto",
+                 VALUE=_pitch_expr(e, e.IT("APU_FREQ", ch), base_hz),
+                 fields={"EFFECT": ["PITCH"]})
+        s2.stack("sound_setvolumeto", VOLUME=e.IT("APU_VOL", ch))
         with e.FOREVER(s2) as body:
             if isinstance(sound_sel, str):
                 menu = e._op("sound_sounds_menu", fields={"SOUND_MENU": [sound_sel]})

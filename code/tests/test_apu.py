@@ -80,6 +80,36 @@ for nm, nsounds in expected.items():
     check("%s auto-mutes after its note length elapses (length-counter fix)" % nm,
           "control_wait" in ops, True)
 
+    # Regression check for the "sits there and makes noise" bug: a freshly
+    # spawned clone must set its OWN pitch+volume immediately, before
+    # entering the playback loop -- not rely solely on the separate
+    # apu_update_<ch> broadcast arriving in time (a clone otherwise starts
+    # at Scratch's default 100% volume for however long that takes, which
+    # on a game that restarts notes constantly is audible as a blip on
+    # every single restart). Walk the ACTUAL block chain from the
+    # control_start_as_clone hat and confirm sound_seteffectto and
+    # sound_setvolumeto appear in that script BEFORE sound_playuntildone.
+    # sound_playuntildone lives nested inside the control_forever's SUBSTACK,
+    # not the top-level chain, so: confirm sound_setvolumeto/sound_seteffectto
+    # appear in the TOP-LEVEL chain (i.e. execute unconditionally, once, at
+    # clone spawn) strictly before the control_forever block that contains
+    # the playback loop.
+    blocks = t["blocks"]
+    clone_hat = next(b for b in blocks.values()
+                     if isinstance(b, dict) and b["opcode"] == "control_start_as_clone")
+    seq = []
+    cur = clone_hat.get("next")
+    while cur and cur in blocks:
+        seq.append(blocks[cur]["opcode"])
+        cur = blocks[cur].get("next")
+    idx_vol = seq.index("sound_setvolumeto") if "sound_setvolumeto" in seq else -1
+    idx_pitch = seq.index("sound_seteffectto") if "sound_seteffectto" in seq else -1
+    idx_loop = seq.index("control_forever") if "control_forever" in seq else -1
+    check("%s clone sets volume BEFORE entering its playback loop" % nm,
+          -1 not in (idx_vol, idx_loop) and idx_vol < idx_loop, True)
+    check("%s clone sets pitch BEFORE entering its playback loop" % nm,
+          -1 not in (idx_pitch, idx_loop) and idx_pitch < idx_loop, True)
+
 # All 4 channels pitch-shift now, including noise -- see apu_build.py's
 # module docstring for why noise moved from asset-selection-per-period to
 # pitch-shifting 2 clean base assets (asset-per-period aliased badly at
