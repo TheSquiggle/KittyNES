@@ -5,7 +5,7 @@ A full NES (Nintendo Entertainment System) emulator built as a real, loadable
 Each console is fully self-contained in **one sprite** (all state sprite-local
 except explicitly cross-sprite APU state) — see
 [`progress/PROGRESS_LOG.md`](progress/PROGRESS_LOG.md)'s "one sprite = one
-emulator" entry and `code/test_multiconsole.py`, which builds two complete,
+emulator" entry and `code/tests/test_multiconsole.py`, which builds two complete,
 independent NES cores in a single project as proof.
 
 **Status: 8 core phases done and verified, plus mappers 0/1/2/3/4/66,
@@ -46,7 +46,7 @@ or run `build_from_rom.py` for a file-picker GUI.
   construct `.sb3` files programmatically. Canonical generator: `code/build_core.py`
   (all 8 phases' block-graph generation) driven by `code/gen_build.py`, plus
   `code/tables6502.py` (opcode table) and `code/ines_loader.py` (cartridge
-  loader, Phase 7). Every phase has a matching `code/test_*.py` verification
+  loader, Phase 7). Every phase has a matching `code/tests/test_*.py` verification
   suite run via `code/interp.py` (a from-scratch Python re-implementation of
   the subset of Scratch VM behavior this project emits — walks the *actual*
   generated block graph, not a re-derivation of the logic; it caught every
@@ -54,6 +54,14 @@ or run `build_from_rom.py` for a file-picker GUI.
   `code/gen_full.py`/`code/gen_phase1_2.py` are an earlier, simpler,
   self-contained generator (phases 1-4 only, no mapper/PPU scaffolding) kept
   for reference but superseded by `build_core.py`.
+- `code/tests/` — every `test_*.py` verification suite (run each directly,
+  e.g. `python code/tests/test_cpu.py`; they exit non-zero on any failing
+  check and print a PASS/FAIL line per check).
+- `code/diagnostics/` — one-off/reusable investigation tooling: frame/VRAM
+  dumpers (`dump_frames.py`, `dump_vram.py`), cycle/timing tracers
+  (`diag_cycles.py`, `diag_regiondetect.py`, `trace_mapper.py`), and the
+  real-ROM smoke-test drivers (`run_accuracycoin.py`, `run_nestress_smoke.py`,
+  `run_smb_smoke.py`). Not part of the build; useful when chasing a bug.
 - `progress/` — intermediate per-milestone `.sb3` checkpoints, the final
   `nes_emulator.sb3`, and `PROGRESS_LOG.md` (detailed phase-by-phase log,
   including every bug found and fixed along the way).
@@ -171,7 +179,7 @@ phase (`phase1_tables`, `phase2_bus`, `phase3_cpu`, `phase6_ppu_bg`,
 milestone.
 
 To rebuild: `python code/gen_build.py`. To reverify: run each
-`code/test_*.py` script (they all exit non-zero on any failing check and
+`code/tests/test_*.py` script (they all exit non-zero on any failing check and
 print a PASS/FAIL line per check). Always validate any `.sb3` output with
 the `scratch-sb3` skill's `validate_sb3.py` structural checker before
 treating it as good — this project's workflow ran it after every phase.

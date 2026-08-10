@@ -24,3 +24,4 @@ test_roms/Famidash - Huge Man v1.2.8.nes
 # Generated APU waveform assets (~12MB, fully regenerable via code/audio_assets.py)
 assets/audio/
 progress/black_backdrop_test.sb3
+__pycache__/
